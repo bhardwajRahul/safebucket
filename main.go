@@ -22,11 +22,12 @@ func main() {
 
 	r.Get("/", homePage)
 
+	zap.L().Info("App started")
+
 	err := http.ListenAndServe(":1323", r)
 	if err != nil {
 		zap.L().Error("Failed to start the app")
 	}
-	zap.L().Error("App started")
 }
 
 func homePage(w http.ResponseWriter, r *http.Request) {
