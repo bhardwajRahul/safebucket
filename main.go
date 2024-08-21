@@ -1,15 +1,27 @@
 package main
 
 import (
+	"api/internal/database"
+	"api/internal/models"
 	"fmt"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 	"net/http"
 	"time"
 )
 
+var db *gorm.DB
+
 func main() {
+	// TODO: Parse config and pass it as a param
+	db = database.InitDB()
+
+	db.AutoMigrate(&models.User{})
+	db.AutoMigrate(&models.Bucket{})
+	db.AutoMigrate(&models.File{})
+
 	zap.ReplaceGlobals(zap.Must(zap.NewProduction()))
 	r := chi.NewRouter()
 
