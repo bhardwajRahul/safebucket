@@ -43,7 +43,7 @@ func readFileConfig(v *viper.Viper) {
 }
 
 func setDefault(v *viper.Viper) {
-	v.SetDefault("database.sslmode", "disabled")
+	v.SetDefault("database.sslmode", "disable")
 	v.SetDefault("database.port", 5432)
 }
 
