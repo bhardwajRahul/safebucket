@@ -2,47 +2,24 @@ package services
 
 import (
 	c "api/internal/common"
+	"api/internal/configuration"
+	"api/internal/handlers"
 	h "api/internal/helpers"
 	"api/internal/models"
-	"crypto/rand"
-	"encoding/base64"
+	"context"
 	"errors"
+	"fmt"
 	"github.com/alexedwards/argon2id"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 	"gorm.io/gorm"
-	"io"
-	"net/http"
-	"time"
 )
 
 type AuthService struct {
-	DB       *gorm.DB
-	JWTConf  models.JWTConfiguration
-	Config   oauth2.Config
-	Verifier *oidc.IDTokenVerifier
-	Provider *oidc.Provider
-}
-
-func randString(nByte int) (string, error) {
-	b := make([]byte, nByte)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-func setCallbackCookie(w http.ResponseWriter, r *http.Request, name, value string) {
-	cookie := &http.Cookie{
-		Name:     name,
-		Value:    value,
-		MaxAge:   int(time.Hour.Seconds()),
-		Secure:   r.TLS != nil,
-		HttpOnly: true,
-	}
-	http.SetCookie(w, cookie)
+	DB        *gorm.DB
+	JWTConf   models.JWTConfiguration
+	Providers configuration.Providers
 }
 
 func (s AuthService) Routes() chi.Router {
@@ -52,9 +29,12 @@ func (s AuthService) Routes() chi.Router {
 	r.With(c.Validate[models.AuthVerify]).Post("/verify", c.CreateHandler(s.Verify))
 	r.With(c.Validate[models.AuthVerify]).Post("/refresh", c.CreateHandler(s.Refresh))
 
-	r.Route("/{provider}", func(r chi.Router) {
-		r.Get("/begin", s.OAuthBegin)
-		r.Get("/callback", s.OAuthCallback)
+	r.Route("/providers", func(r chi.Router) {
+		r.Get("/", c.GetListHandler(s.GetProviderList))
+		r.Route("/{provider}", func(r chi.Router) {
+			r.Get("/begin", handlers.OpenIDBeginHandler(s.OpenIDBegin))
+			r.Get("/callback", handlers.OpenIDCallbackHandler(s.OpenIDCallback))
+		})
 	})
 	return r
 }
@@ -94,68 +74,54 @@ func (s AuthService) Refresh(body models.AuthRefresh) (models.AuthRefreshRespons
 	return models.AuthRefreshResponse{AccessToken: accessToken}, err
 }
 
-func (s AuthService) OAuthBegin(w http.ResponseWriter, r *http.Request) {
-	provider := chi.URLParam(r, "provider")
-	zap.L().Info(
-		"Provider",
-		zap.String("provider", provider),
-	)
-
-	state, _ := randString(16)
-	nonce, _ := randString(16)
-	setCallbackCookie(w, r, "state", state)
-	setCallbackCookie(w, r, "nonce", nonce)
-
-	url := s.Config.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.AccessTypeOffline)
-	http.Redirect(w, r, url, http.StatusFound)
+func (s AuthService) GetProviderList() []string {
+	var providers []string
+	for key := range s.Providers {
+		providers = append(providers, key)
+	}
+	return providers
 }
 
-func (s AuthService) OAuthCallback(w http.ResponseWriter, r *http.Request) {
-	provider := chi.URLParam(r, "provider")
-
-	state, err := r.Cookie("state")
-	if err != nil {
-		c.RespondWithError(w, http.StatusBadRequest, []string{"state not found"})
-		return
-	}
-	if r.URL.Query().Get("state") != state.Value {
-		c.RespondWithError(w, http.StatusBadRequest, []string{"state does not match"})
-		return
+func (s AuthService) OpenIDBegin(providerName string, state string, nonce string) (string, error) {
+	provider, ok := s.Providers[providerName]
+	if !ok {
+		return "", fmt.Errorf("provider not found")
 	}
 
-	oauth2Token, err := s.Config.Exchange(r.Context(), r.URL.Query().Get("code"))
+	url := provider.OauthConfig.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.AccessTypeOffline)
+	return url, nil
+}
+
+func (s AuthService) OpenIDCallback(
+	ctx context.Context, providerName string, code string, nonce string,
+) (string, string, error) {
+	provider, ok := s.Providers[providerName]
+	if !ok {
+		return "", "", fmt.Errorf("provider not found")
+	}
+
+	oauth2Token, err := provider.OauthConfig.Exchange(ctx, code)
 	if err != nil {
-		strErrors := []string{"Failed to exchange token", err.Error()}
-		c.RespondWithError(w, http.StatusInternalServerError, strErrors)
-		return
+		return "", "", fmt.Errorf("failed to exchange token %s", err.Error())
 	}
 
 	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
 	if !ok {
-		c.RespondWithError(w, http.StatusInternalServerError, []string{"no id_token field in oauth2 token"})
-		return
+		return "", "", fmt.Errorf("no id_token field in oauth2 token")
 	}
 
-	idToken, err := s.Verifier.Verify(r.Context(), rawIDToken)
+	idToken, err := provider.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		c.RespondWithError(w, http.StatusInternalServerError, []string{"failed to verify ID token", err.Error()})
-		return
+		return "", "", fmt.Errorf("failed to verify ID token %s", err.Error())
 	}
 
-	userInfo, err := s.Provider.UserInfo(r.Context(), oauth2.StaticTokenSource(oauth2Token))
-	if err != nil {
-		c.RespondWithError(w, http.StatusInternalServerError, []string{"failed to get user info", err.Error()})
-		return
+	if idToken.Nonce != nonce {
+		return "", "", fmt.Errorf("nonce does not match")
 	}
 
-	nonce, err := r.Cookie("nonce")
+	userInfo, err := provider.Provider.UserInfo(ctx, oauth2.StaticTokenSource(oauth2Token))
 	if err != nil {
-		c.RespondWithError(w, http.StatusInternalServerError, []string{"nonce not found"})
-		return
-	}
-	if idToken.Nonce != nonce.Value {
-		c.RespondWithError(w, http.StatusInternalServerError, []string{"nonce does not match"})
-		return
+		return "", "", fmt.Errorf("failed to get user info %s", err.Error())
 	}
 
 	searchUser := models.User{Email: userInfo.Email, IsExternal: true}
@@ -164,31 +130,5 @@ func (s AuthService) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.DB.Create(&searchUser)
 	}
 
-	expiration := time.Now().Add(365 * 24 * time.Hour)
-	cookie := http.Cookie{
-		Name:    "safebucket_access_token",
-		Value:   rawIDToken,
-		Expires: expiration,
-		Path:    "/",
-	}
-	http.SetCookie(w, &cookie)
-
-	providerCookie := http.Cookie{
-		Name:    "safebucket_auth_provider",
-		Value:   provider,
-		Expires: expiration,
-		Path:    "/",
-	}
-	http.SetCookie(w, &providerCookie)
-
-	if oauth2Token.RefreshToken != "" {
-		refreshTokenCookie := http.Cookie{
-			Name:    "safebucket_refresh_token",
-			Value:   oauth2Token.RefreshToken,
-			Expires: expiration,
-			Path:    "/",
-		}
-		http.SetCookie(w, &refreshTokenCookie)
-	}
-	http.Redirect(w, r, "http://localhost:3001/auth/complete", http.StatusFound)
+	return rawIDToken, oauth2Token.RefreshToken, nil
 }
