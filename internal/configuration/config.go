@@ -8,23 +8,22 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"os"
+	"strings"
 )
 
 func readEnvVars(v *viper.Viper) {
-	zap.L().Info("Load environment variables")
-	v.AutomaticEnv()
-	_ = v.BindEnv("database.host", "DATABASE_HOST")
-	_ = v.BindEnv("database.port", "DATABASE_PORT")
-	_ = v.BindEnv("database.name", "DATABASE_NAME")
-	_ = v.BindEnv("database.user", "DATABASE_USER")
-	_ = v.BindEnv("database.password", "DATABASE_PASSWORD")
-	_ = v.BindEnv("database.sslmode", "DATABASE_SSLMODE")
-
-	_ = v.BindEnv("jwt.secret", "JWT_SECRET")
-	_ = v.BindEnv("cors.allowed_origins", "CORS_ALLOWED_ORIGINS")
-
-	_ = v.BindEnv("auth_providers.google_client_id", "GOOGLE_CLIENT_ID")
-	_ = v.BindEnv("auth_providers.google_client_secret", "GOOGLE_CLIENT_SECRET")
+	keys := []string{"name", "client_id", "client_secret", "issuer"}
+	providers := strings.Split(v.GetString("AUTH_PROVIDERS_KEYS"), ",")
+	for _, provider := range providers {
+		providerUpper := strings.ToUpper(provider)
+		for _, key := range keys {
+			keyUpper := strings.ToUpper(key)
+			_ = v.BindEnv(
+				fmt.Sprintf("auth.providers.%s.%s", provider, key),
+				fmt.Sprintf("AUTH_PROVIDERS_%s_%s", providerUpper, keyUpper),
+			)
+		}
+	}
 }
 
 func readFileConfig(v *viper.Viper) {
@@ -55,6 +54,9 @@ func setDefault(v *viper.Viper) {
 
 func Read() models.Configuration {
 	v := viper.New()
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
 	readEnvVars(v)
 	readFileConfig(v)
 	setDefault(v)

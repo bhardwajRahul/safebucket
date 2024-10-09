@@ -14,14 +14,17 @@ type Provider struct {
 	Provider    *oidc.Provider
 	Verifier    *oidc.IDTokenVerifier
 	OauthConfig oauth2.Config
+	Order       int
 }
 
 type Providers map[string]Provider
 
 type ProvidersConfiguration map[string]models.ProviderConfiguration
 
-func LoadProviders(ctx context.Context, providersCfg ProvidersConfiguration) Providers {
+func LoadProviders(ctx context.Context, apiUrl string, providersCfg ProvidersConfiguration) Providers {
 	var providers = Providers{}
+	idx := 0
+
 	for name, providerCfg := range providersCfg {
 		provider, err := oidc.NewProvider(ctx, providerCfg.Issuer)
 		if err != nil {
@@ -39,7 +42,7 @@ func LoadProviders(ctx context.Context, providersCfg ProvidersConfiguration) Pro
 			ClientID:     providerCfg.ClientId,
 			ClientSecret: providerCfg.ClientSecret,
 			Endpoint:     provider.Endpoint(),
-			RedirectURL:  fmt.Sprintf("http://localhost:1323/auth/providers/%s/callback", name),
+			RedirectURL:  fmt.Sprintf("%s/auth/providers/%s/callback", apiUrl, name),
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		}
 
@@ -48,7 +51,10 @@ func LoadProviders(ctx context.Context, providersCfg ProvidersConfiguration) Pro
 			Provider:    provider,
 			Verifier:    verifier,
 			OauthConfig: oauthConfig,
+			Order:       idx,
 		}
+
+		idx++
 
 		zap.L().Info(
 			"Loaded auth provider",

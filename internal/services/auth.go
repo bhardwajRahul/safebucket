@@ -13,13 +13,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 	"gorm.io/gorm"
-	"sort"
 )
 
 type AuthService struct {
 	DB        *gorm.DB
 	JWTConf   models.JWTConfiguration
 	Providers configuration.Providers
+	WebUrl    string
 }
 
 func (s AuthService) Routes() chi.Router {
@@ -33,7 +33,7 @@ func (s AuthService) Routes() chi.Router {
 		r.Get("/", handlers.GetListHandler(s.GetProviderList))
 		r.Route("/{provider}", func(r chi.Router) {
 			r.Get("/begin", handlers.OpenIDBeginHandler(s.OpenIDBegin))
-			r.Get("/callback", handlers.OpenIDCallbackHandler(s.OpenIDCallback))
+			r.Get("/callback", handlers.OpenIDCallbackHandler(s.WebUrl, s.OpenIDCallback))
 		})
 	})
 	return r
@@ -78,20 +78,12 @@ func (s AuthService) Refresh(body models.AuthRefresh) (models.AuthRefreshRespons
 }
 
 func (s AuthService) GetProviderList() []models.ProviderResponse {
-	// Sort the keys to always return the same order
-	keys := make([]string, 0, len(s.Providers))
-	for key := range s.Providers {
-		keys = append(keys, key)
-	}
-
-	sort.Strings(keys)
-
-	var providers []models.ProviderResponse
-	for _, key := range keys {
-		providers = append(providers, models.ProviderResponse{
-			Id:   key,
-			Name: s.Providers[key].Name,
-		})
+	var providers = make([]models.ProviderResponse, len(s.Providers))
+	for id, provider := range s.Providers {
+		providers[provider.Order] = models.ProviderResponse{
+			Id:   id,
+			Name: provider.Name,
+		}
 	}
 	return providers
 }
