@@ -1,6 +1,7 @@
 package main
 
 import (
+	c "api/internal/cache"
 	"api/internal/configuration"
 	"api/internal/database"
 	"api/internal/models"
@@ -9,7 +10,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"log"
 	"net/http"
 	"time"
 )
@@ -18,11 +21,21 @@ func main() {
 	zap.ReplaceGlobals(zap.Must(zap.NewProduction()))
 	config := configuration.Read()
 	db := database.InitDB(config.Database)
+	cache := c.InitCache(config.Redis)
 
 	err := db.AutoMigrate(&models.User{}, &models.Bucket{}, &models.File{})
 	if err != nil {
 		zap.L().Error("failed to migrate db models", zap.Error(err))
 	}
+
+	appIdentity := uuid.New().String()
+
+	go func() {
+		err := cache.StartIdentityTicker(appIdentity)
+		if err != nil {
+			log.Fatalf("Platform identity ticker crashed: %v\n", err)
+		}
+	}()
 
 	r := chi.NewRouter()
 
