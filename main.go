@@ -3,7 +3,9 @@ package main
 import (
 	c "api/internal/cache"
 	"api/internal/configuration"
+	"api/internal/core"
 	"api/internal/database"
+	"api/internal/events"
 	"api/internal/services"
 	"api/internal/storage"
 	"context"
@@ -22,11 +24,14 @@ func main() {
 	config := configuration.Read()
 	db := database.InitDB(config.Database)
 	cache := c.InitCache(config.Redis)
-
 	s3 := storage.InitStorage(config.Storage)
+	publisher := core.NewPublisher(config.Events, configuration.EventsNotificationsTopicName)
+	subscriber := core.NewSubscriber(config.Events)
+	messages := subscriber.Subscribe(context.Background(), configuration.EventsNotificationsTopicName)
+
+	go events.HandleNotifications(messages)
 
 	appIdentity := uuid.New().String()
-
 	go func() {
 		err := cache.StartIdentityTicker(appIdentity)
 		if err != nil {
@@ -35,7 +40,7 @@ func main() {
 	}()
 
 	r := chi.NewRouter()
-	// A good base middleware stack
+
 	r.Use(middleware.Timeout(60 * time.Second))
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -51,11 +56,10 @@ func main() {
 		MaxAge:           300,
 	}))
 
-	ctx := context.Background()
-	providers := configuration.LoadProviders(ctx, config.Platform.ApiUrl, config.Auth.Providers)
+	providers := configuration.LoadProviders(context.Background(), config.Platform.ApiUrl, config.Auth.Providers)
 
 	r.Mount("/users", services.UserService{DB: db}.Routes())
-	r.Mount("/buckets", services.BucketService{DB: db, S3: s3}.Routes())
+	r.Mount("/buckets", services.BucketService{DB: db, S3: s3, Publisher: &publisher}.Routes())
 
 	r.Mount("/auth", services.AuthService{
 		DB:        db,

@@ -2,8 +2,10 @@ package services
 
 import (
 	"api/internal/errors"
+	"api/internal/events"
 	"api/internal/handlers"
 	h "api/internal/helpers"
+	"api/internal/messaging"
 	"api/internal/models"
 	"api/internal/sql"
 	"context"
@@ -18,8 +20,9 @@ import (
 )
 
 type BucketService struct {
-	DB *gorm.DB
-	S3 *minio.Client
+	DB        *gorm.DB
+	S3        *minio.Client
+	Publisher *messaging.IPublisher
 }
 
 func (s BucketService) Routes() chi.Router {
@@ -44,6 +47,9 @@ func (s BucketService) Routes() chi.Router {
 
 func (s BucketService) CreateBucket(_ uuid.UUIDs, body models.Bucket) (models.Bucket, error) {
 	s.DB.Create(&body)
+	// TODO: Create the event with real emails
+	event := events.NewBucketSharedWith(*s.Publisher, []string{"milou@safebucket.com"})
+	event.Trigger()
 	return body, nil
 }
 
