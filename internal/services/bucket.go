@@ -1,10 +1,12 @@
 package services
 
 import (
+	"api/internal/activity"
 	c "api/internal/configuration"
 	"api/internal/errors"
 	"api/internal/events"
 	"api/internal/handlers"
+	h "api/internal/helpers"
 	"api/internal/messaging"
 	m "api/internal/middlewares"
 	"api/internal/models"
@@ -21,14 +23,16 @@ import (
 	"gorm.io/gorm"
 	"path"
 	"path/filepath"
+	"reflect"
 	"time"
 )
 
 type BucketService struct {
-	DB        *gorm.DB
-	S3        *minio.Client
-	Enforcer  *casbin.Enforcer
-	Publisher *messaging.IPublisher
+	DB             *gorm.DB
+	S3             *minio.Client
+	Enforcer       *casbin.Enforcer
+	Publisher      *messaging.IPublisher
+	ActivityLogger activity.IActivityLogger
 }
 
 func (s BucketService) Routes() chi.Router {
@@ -59,7 +63,6 @@ func (s BucketService) Routes() chi.Router {
 			With(m.Validate[models.FileTransferBody]).Post("/files", handlers.CreateHandler(s.UploadFile))
 
 		r.Route("/files/{id1}", func(r chi.Router) {
-
 			r.With(m.Authorize(s.Enforcer, rbac.ResourceBucket, rbac.ActionUpload, 0)).
 				With(m.Validate[models.UpdateFileBody]).
 				Patch("/", handlers.UpdateHandler(s.UpdateFile))
@@ -71,6 +74,9 @@ func (s BucketService) Routes() chi.Router {
 				Get("/download", handlers.GetOneHandler(s.DownloadFile))
 		})
 	})
+
+	r.Get("/history", handlers.GetListHandler(s.GetHistory))
+
 	return r
 }
 
@@ -126,6 +132,23 @@ func (s BucketService) CreateBucket(user models.UserClaims, _ uuid.UUIDs, body m
 		}
 	}
 
+	action := models.Activity{
+		Message: activity.BucketCreated,
+		Filter: h.NewLogFilter(map[string]string{
+			"action":      rbac.ActionCreate.String(),
+			"domain":      c.DefaultDomain,
+			"object_type": rbac.ResourceBucket.String(),
+			"bucket_id":   newBucket.ID.String(),
+			"user_id":     user.UserID.String(),
+		}),
+	}
+
+	err = s.ActivityLogger.Send(action)
+
+	if err != nil {
+		return newBucket, err
+	}
+
 	return newBucket, nil
 }
 
@@ -136,6 +159,7 @@ func (s BucketService) GetBucketList(user models.UserClaims) []models.Bucket {
 		return []models.Bucket{}
 	}
 	roles, err := s.Enforcer.GetImplicitRolesForUser(user.UserID.String(), c.DefaultDomain)
+
 	if err != nil {
 		zap.L().Warn(fmt.Sprintf("Error retrieving roles %v", user.UserID.String()))
 		return []models.Bucket{}
@@ -177,17 +201,18 @@ func (s BucketService) GetBucket(_ models.UserClaims, ids uuid.UUIDs) (models.Bu
 	}
 }
 
-func (s BucketService) UpdateBucket(ids uuid.UUIDs, body models.Bucket) (models.Bucket, error) {
+func (s BucketService) UpdateBucket(_ models.UserClaims, ids uuid.UUIDs, body models.Bucket) (models.Bucket, error) {
 	bucket := models.Bucket{ID: ids[0]}
 	result := s.DB.Model(&bucket).Updates(body)
 	if result.RowsAffected == 0 {
 		return bucket, errors.NewAPIError(404, "BUCKET_NOT_FOUND")
 	} else {
+
 		return bucket, nil
 	}
 }
 
-func (s BucketService) DeleteBucket(ids uuid.UUIDs) error {
+func (s BucketService) DeleteBucket(_ models.UserClaims, ids uuid.UUIDs) error {
 	result := s.DB.Where("id = ?", ids[0]).Delete(&models.Bucket{})
 	if result.RowsAffected == 0 {
 		return errors.NewAPIError(404, "BUCKET_NOT_FOUND")
@@ -196,7 +221,7 @@ func (s BucketService) DeleteBucket(ids uuid.UUIDs) error {
 	}
 }
 
-func (s BucketService) UploadFile(_ models.UserClaims, ids uuid.UUIDs, body models.FileTransferBody) (models.FileTransferResponse, error) {
+func (s BucketService) UploadFile(user models.UserClaims, ids uuid.UUIDs, body models.FileTransferBody) (models.FileTransferResponse, error) {
 	bucket, err := sql.GetById[models.Bucket](s.DB, ids[0])
 	if err != nil {
 		return models.FileTransferResponse{}, err
@@ -233,6 +258,22 @@ func (s BucketService) UploadFile(_ models.UserClaims, ids uuid.UUIDs, body mode
 		return models.FileTransferResponse{}, err
 	}
 
+	action := models.Activity{
+		Message: activity.FileUploaded,
+		Filter: h.NewLogFilter(map[string]string{
+			"action":      rbac.ActionUpload.String(),
+			"bucket_id":   bucket.ID.String(),
+			"domain":      c.DefaultDomain,
+			"object_type": rbac.ResourceFile.String(),
+			"user_id":     user.UserID.String(),
+		}),
+	}
+	err = s.ActivityLogger.Send(action)
+
+	if err != nil {
+		return models.FileTransferResponse{}, err
+	}
+
 	return models.FileTransferResponse{
 		ID:   file.ID.String(),
 		Url:  url.String(),
@@ -240,7 +281,7 @@ func (s BucketService) UploadFile(_ models.UserClaims, ids uuid.UUIDs, body mode
 	}, nil
 }
 
-func (s BucketService) UpdateFile(ids uuid.UUIDs, body models.UpdateFileBody) (models.File, error) {
+func (s BucketService) UpdateFile(user models.UserClaims, ids uuid.UUIDs, body models.UpdateFileBody) (models.File, error) {
 	bucketId, fileId := ids[0], ids[1]
 
 	file, err := sql.GetFileById(s.DB, bucketId, fileId)
@@ -261,13 +302,30 @@ func (s BucketService) UpdateFile(ids uuid.UUIDs, body models.UpdateFileBody) (m
 		}
 
 		s.DB.Model(&file).Updates(body)
+
+		action := models.Activity{
+			Message: activity.FileUpdated,
+			Filter: h.NewLogFilter(map[string]string{
+				"action":      rbac.ActionUpdate.String(),
+				"bucket_id":   bucketId.String(),
+				"domain":      c.DefaultDomain,
+				"object_type": rbac.ResourceFile.String(),
+				"user_id":     user.UserID.String(),
+			}),
+		}
+		err = s.ActivityLogger.Send(action)
+
+		if err != nil {
+			return models.File{}, err
+		}
+
 		return file, nil
 	}
 
 	return file, nil
 }
 
-func (s BucketService) DeleteFile(ids uuid.UUIDs) error {
+func (s BucketService) DeleteFile(user models.UserClaims, ids uuid.UUIDs) error {
 	bucketId, fileId := ids[0], ids[1]
 
 	file, err := sql.GetFileById(s.DB, bucketId, fileId)
@@ -290,10 +348,27 @@ func (s BucketService) DeleteFile(ids uuid.UUIDs) error {
 		zap.L().Error("Failed to delete file", zap.Error(result.Error))
 		return errors.NewAPIError(500, "FILE_DELETION_FAILED")
 	}
+
+	action := models.Activity{
+		Message: activity.FileDeleted,
+		Filter: h.NewLogFilter(map[string]string{
+			"action":      rbac.ActionDelete.String(),
+			"bucket_id":   bucketId.String(),
+			"domain":      c.DefaultDomain,
+			"object_type": rbac.ResourceFile.String(),
+			"user_id":     user.UserID.String(),
+		}),
+	}
+	err = s.ActivityLogger.Send(action)
+
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
-func (s BucketService) DownloadFile(_ models.UserClaims, ids uuid.UUIDs) (models.FileTransferResponse, error) {
+func (s BucketService) DownloadFile(user models.UserClaims, ids uuid.UUIDs) (models.FileTransferResponse, error) {
 	bucketId, fileId := ids[0], ids[1]
 
 	file, err := sql.GetFileById(s.DB, bucketId, fileId)
@@ -314,8 +389,65 @@ func (s BucketService) DownloadFile(_ models.UserClaims, ids uuid.UUIDs) (models
 		return models.FileTransferResponse{}, err
 	}
 
+	action := models.Activity{
+		Message: activity.FileDownloaded,
+		Filter: h.NewLogFilter(map[string]string{
+			"action":      rbac.ActionDownload.String(),
+			"bucket_id":   bucketId.String(),
+			"domain":      c.DefaultDomain,
+			"object_type": rbac.ResourceFile.String(),
+			"user_id":     user.UserID.String(),
+		}),
+	}
+	err = s.ActivityLogger.Send(action)
+
+	if err != nil {
+		return models.FileTransferResponse{}, err
+	}
+
 	return models.FileTransferResponse{
 		ID:  file.ID.String(),
 		Url: url.String(),
 	}, nil
+}
+
+func (s BucketService) GetHistory(user models.UserClaims) []map[string]interface{} {
+	buckets := s.GetBucketList(user)
+
+	var bucketIds []string
+	for _, bucket := range buckets {
+		bucketIds = append(bucketIds, bucket.ID.String())
+	}
+
+	searchCriteria := map[string][]string{
+		"domain":      {c.DefaultDomain},
+		"object_type": {rbac.ResourceBucket.String(), rbac.ResourceFile.String()},
+		"bucket_id":   bucketIds,
+	}
+
+	history, err := s.ActivityLogger.Search(searchCriteria)
+
+	if err != nil {
+		zap.L().Error("Search history failed", zap.Error(err))
+		return []map[string]interface{}{}
+	}
+
+	if len(history) == 0 {
+		return []map[string]interface{}{}
+	}
+
+	for _, log := range history {
+		for fieldName, enrichedField := range activity.ToEnrich {
+			if log[fieldName] != "" {
+				object := reflect.New(reflect.TypeOf(enrichedField.Object)).Interface()
+
+				s.DB.Where("id = ?", log[fieldName]).First(object)
+				log[enrichedField.Name] = object
+
+				delete(log, fieldName)
+			}
+		}
+	}
+
+	return history
 }

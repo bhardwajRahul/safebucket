@@ -11,6 +11,7 @@ type Configuration struct {
 	Admin    AdminConfiguration    `mapstructure:"admin" validate:"required,dive"`
 	Events   EventsConfiguration   `mapstructure:"events" validate:"required,dive"`
 	Mailer   MailerConfiguration   `mapstructure:"mailer" validate:"required,dive"`
+	Activity ActivityConfiguration `mapstructure:"activity" validate:"required,dive"`
 }
 
 type PlatformConfiguration struct {
@@ -64,7 +65,7 @@ type AdminConfiguration struct {
 }
 
 type EventsConfiguration struct {
-	Type string `mapstructure:"type" validate:"required"`
+	Type string `mapstructure:"type" validate:"required,oneof=jetstream"`
 	Host string `mapstructure:"host" validate:"required"`
 	Port string `mapstructure:"port" validate:"required"`
 }
@@ -75,4 +76,10 @@ type MailerConfiguration struct {
 	Username string `mapstructure:"username"`
 	Password string `mapstructure:"password"`
 	Sender   string `mapstructure:"sender" validate:"required"`
+}
+
+type ActivityConfiguration struct {
+	Level    string `mapstructure:"level"`
+	Type     string `mapstructure:"type" validate:"required,oneof=loki"`
+	Endpoint string `mapstructure:"endpoint" validate:"required"`
 }
