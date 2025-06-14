@@ -34,10 +34,14 @@ func main() {
 	cache := c.InitCache(config.Redis)
 	s3 := core.InitStorage(config.Storage)
 	mailer := core.NewMailer(config.Mailer)
-	publisher := core.NewPublisher(config.Events, configuration.EventsNotificationsTopicName)
+	publisher := core.NewPublisher(config.Events)
 	activity := core.NewActivityLogger(config.Activity)
-	subscriber := core.NewSubscriber(config.Events)
-	messages := subscriber.Subscribe(context.Background(), configuration.EventsNotificationsTopicName)
+	subscriber := core.NewSubscriber(
+		config.Events,
+		[]string{configuration.EventsNotificationsTopicName, configuration.EventsBucketsTopicName},
+	)
+	notifications := subscriber.Subscribe(context.Background(), configuration.EventsNotificationsTopicName)
+	bucketEvents := subscriber.Subscribe(context.Background(), configuration.EventsBucketsTopicName)
 
 	model := rbac.GetModel()
 	a, _ := gormadapter.NewAdapterByDBWithCustomTable(db, &models.Policy{}, configuration.PolicyTableName)
@@ -67,7 +71,9 @@ func main() {
 
 	appIdentity := uuid.New().String()
 
-	go events.HandleNotifications(config.Platform.WebUrl, mailer, messages)
+	go events.HandleNotifications(config.Platform.WebUrl, mailer, notifications)
+
+	go events.HandleBucketEvents(db, activity, bucketEvents)
 
 	go func() {
 		err := cache.StartIdentityTicker(appIdentity)

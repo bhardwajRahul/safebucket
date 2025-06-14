@@ -253,25 +253,15 @@ func (s BucketService) UploadFile(user models.UserClaims, ids uuid.UUIDs, body m
 	_ = policy.SetKey(path.Join("/buckets", bucket.ID.String(), file.Path, file.Name))
 	_ = policy.SetContentLengthRange(int64(body.Size), int64(body.Size))
 	_ = policy.SetExpires(time.Now().UTC().Add(15 * time.Minute))
+	_ = policy.SetUserMetadata("Bucket-Id", bucket.ID.String())
+	_ = policy.SetUserMetadata("File-Id", file.ID.String())
+	_ = policy.SetUserMetadata("User-Id", user.UserID.String())
 	url, formData, err := s.S3.PresignedPostPolicy(context.Background(), policy)
 
 	if err != nil {
 		zap.L().Error("Generate presigned URL failed", zap.Error(err))
 		return models.FileTransferResponse{}, err
 	}
-
-	action := models.Activity{
-		Message: activity.FileUploaded,
-		Filter: activity.NewLogFilter(map[string]string{
-			"action":      rbac.ActionUpload.String(),
-			"bucket_id":   bucket.ID.String(),
-			"file_id":     file.ID.String(),
-			"domain":      c.DefaultDomain,
-			"object_type": rbac.ResourceFile.String(),
-			"user_id":     user.UserID.String(),
-		}),
-	}
-	err = s.ActivityLogger.Send(action)
 
 	if err != nil {
 		return models.FileTransferResponse{}, err
