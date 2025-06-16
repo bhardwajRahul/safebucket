@@ -12,22 +12,20 @@ import (
 	"api/internal/rbac"
 	"api/internal/rbac/groups"
 	"api/internal/sql"
-	"context"
+	"api/internal/storage"
 	"fmt"
 	"github.com/casbin/casbin/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"path"
 	"path/filepath"
-	"time"
 )
 
 type BucketService struct {
 	DB             *gorm.DB
-	S3             *minio.Client
+	Storage        storage.IStorage
 	Enforcer       *casbin.Enforcer
 	Publisher      *messaging.IPublisher
 	ActivityLogger activity.IActivityLogger
@@ -170,11 +168,9 @@ func (s BucketService) GetBucketList(user models.UserClaims) []models.Bucket {
 	var bucketIDs []string
 
 	for _, role := range roles {
-		policies, _ := s.Enforcer.GetFilteredPolicy(0, c.DefaultDomain,
-			role,
-			rbac.ResourceBucket.String(),
-			"",
-			rbac.ActionRead.String())
+		policies, _ := s.Enforcer.GetFilteredPolicy(
+			0, c.DefaultDomain, role, rbac.ResourceBucket.String(), "", rbac.ActionRead.String(),
+		)
 
 		for _, policy := range policies {
 			bucketIDs = append(bucketIDs, policy[3])
@@ -209,7 +205,6 @@ func (s BucketService) UpdateBucket(_ models.UserClaims, ids uuid.UUIDs, body mo
 	if result.RowsAffected == 0 {
 		return bucket, errors.NewAPIError(404, "BUCKET_NOT_FOUND")
 	} else {
-
 		return bucket, nil
 	}
 }
@@ -248,28 +243,24 @@ func (s BucketService) UploadFile(user models.UserClaims, ids uuid.UUIDs, body m
 		return models.FileTransferResponse{}, err
 	}
 
-	policy := minio.NewPostPolicy()
-	_ = policy.SetBucket("safebucket") //TODO: set var
-	_ = policy.SetKey(path.Join("/buckets", bucket.ID.String(), file.Path, file.Name))
-	_ = policy.SetContentLengthRange(int64(body.Size), int64(body.Size))
-	_ = policy.SetExpires(time.Now().UTC().Add(15 * time.Minute))
-	_ = policy.SetUserMetadata("Bucket-Id", bucket.ID.String())
-	_ = policy.SetUserMetadata("File-Id", file.ID.String())
-	_ = policy.SetUserMetadata("User-Id", user.UserID.String())
-	url, formData, err := s.S3.PresignedPostPolicy(context.Background(), policy)
+	url, formData, err := s.Storage.PresignedPostPolicy(
+		path.Join("buckets", bucket.ID.String(), file.Path, file.Name),
+		body.Size,
+		map[string]string{
+			"bucket_id": bucket.ID.String(),
+			"file_id":   file.ID.String(),
+			"user_id":   user.UserID.String(),
+		},
+	)
 
 	if err != nil {
 		zap.L().Error("Generate presigned URL failed", zap.Error(err))
 		return models.FileTransferResponse{}, err
 	}
 
-	if err != nil {
-		return models.FileTransferResponse{}, err
-	}
-
 	return models.FileTransferResponse{
 		ID:   file.ID.String(),
-		Url:  url.String(),
+		Url:  url,
 		Body: formData,
 	}, nil
 }
@@ -283,12 +274,7 @@ func (s BucketService) UpdateFile(user models.UserClaims, ids uuid.UUIDs, body m
 	}
 
 	if *body.Uploaded {
-		_, err := s.S3.StatObject(
-			context.Background(),
-			"safebucket",
-			path.Join("buckets", file.BucketId.String(), file.Path, file.Name),
-			minio.StatObjectOptions{},
-		)
+		err := s.Storage.StatObject(path.Join("buckets", file.BucketId.String(), file.Path, file.Name))
 
 		if err != nil {
 			return models.File{}, errors.NewAPIError(400, "FILE_NOT_UPLOADED")
@@ -327,12 +313,8 @@ func (s BucketService) DeleteFile(user models.UserClaims, ids uuid.UUIDs) error 
 		return err
 	}
 
-	err = s.S3.RemoveObject(
-		context.Background(),
-		"safebucket",
-		path.Join("buckets", bucketId.String(), file.Path, file.Name),
-		minio.RemoveObjectOptions{},
-	)
+	err = s.Storage.RemoveObject(path.Join("buckets", bucketId.String(), file.Path, file.Name))
+
 	if err != nil {
 		zap.L().Warn("File does not exist in storage", zap.Error(err))
 	}
@@ -371,13 +353,7 @@ func (s BucketService) DownloadFile(user models.UserClaims, ids uuid.UUIDs) (mod
 		return models.FileTransferResponse{}, err
 	}
 
-	url, err := s.S3.PresignedGetObject(
-		context.Background(),
-		"safebucket",
-		path.Join("buckets", file.BucketId.String(), file.Path, file.Name),
-		time.Minute*15,
-		nil,
-	)
+	url, err := s.Storage.PresignedGetObject(path.Join("buckets", file.BucketId.String(), file.Path, file.Name))
 
 	if err != nil {
 		zap.L().Error("Generate presigned URL failed", zap.Error(err))
@@ -403,7 +379,7 @@ func (s BucketService) DownloadFile(user models.UserClaims, ids uuid.UUIDs) (mod
 
 	return models.FileTransferResponse{
 		ID:  file.ID.String(),
-		Url: url.String(),
+		Url: url,
 	}, nil
 }
 
