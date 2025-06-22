@@ -22,20 +22,24 @@ redis:
   password: root
 
 storage:
-  type: s3
-  bucket_name: safebucket
-  endpoint: localhost:9000
-  client_id: minio-root-user
-  client_secret: minio-root-password
-
-#storage:
-#  bucket_name: safebucket-gcp
-#  type: gcp
+  type: minio
+  minio:
+    bucket_name: safebucket
+    endpoint: localhost:9000
+    client_id: minio-root-user
+    client_secret: minio-root-password
+    type: jetstream
+    jetstream:
+      topic_name: safebucket:notifications
+      host: localhost
+      port: 4222
 
 events:
   type: jetstream
-  host: localhost
-  port: 4222
+  jetstream:
+    topic_name: safebucket:notifications
+    host: localhost
+    port: 4222
 
 mailer:
   host: localhost

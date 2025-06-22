@@ -14,10 +14,11 @@ import (
 )
 
 type JetStreamPublisher struct {
+	TopicName string
 	publisher *jetstream.Publisher
 }
 
-func NewJetStreamPublisher(config models.EventsConfiguration) IPublisher {
+func NewJetStreamPublisher(config *models.JetStreamEventsConfig) IPublisher {
 	nc, _ := nats.Connect(fmt.Sprintf("nats://%s:%s", config.Host, config.Port))
 
 	publisher, err := jetstream.NewPublisher(jetstream.PublisherConfig{
@@ -27,11 +28,11 @@ func NewJetStreamPublisher(config models.EventsConfiguration) IPublisher {
 		zap.L().Fatal("Failed to create JetStream publisher", zap.Error(err))
 	}
 
-	return &JetStreamPublisher{publisher: publisher}
+	return &JetStreamPublisher{TopicName: config.TopicName, publisher: publisher}
 }
 
-func (p *JetStreamPublisher) Publish(topic string, messages ...*message.Message) error {
-	return p.publisher.Publish(topic, messages...)
+func (p *JetStreamPublisher) Publish(messages ...*message.Message) error {
+	return p.publisher.Publish(p.TopicName, messages...)
 }
 
 func (p *JetStreamPublisher) Close() error {
@@ -39,26 +40,25 @@ func (p *JetStreamPublisher) Close() error {
 }
 
 type JetStreamSubscriber struct {
+	TopicName  string
 	subscriber *jetstream.Subscriber
 }
 
-func NewJetStreamSubscriber(config models.EventsConfiguration, topics []string) ISubscriber {
+func NewJetStreamSubscriber(config *models.JetStreamEventsConfig) ISubscriber {
 	nc, _ := nats.Connect(fmt.Sprintf("nats://%s:%s", config.Host, config.Port))
 	js, _ := natsJs.New(nc)
 
-	for _, topic := range topics {
-		stream, _ := js.CreateStream(context.Background(), natsJs.StreamConfig{
-			Name:      topic,
-			Subjects:  []string{topic},
-			Retention: natsJs.WorkQueuePolicy,
-		})
+	stream, _ := js.CreateStream(context.Background(), natsJs.StreamConfig{
+		Name:      config.TopicName,
+		Subjects:  []string{config.TopicName},
+		Retention: natsJs.WorkQueuePolicy,
+	})
 
-		consumerName := fmt.Sprintf("watermill__%s", topic)
-		_, _ = stream.CreateOrUpdateConsumer(context.Background(), natsJs.ConsumerConfig{
-			Name:      consumerName,
-			AckPolicy: natsJs.AckExplicitPolicy,
-		})
-	}
+	consumerName := fmt.Sprintf("watermill__%s", config.TopicName)
+	_, _ = stream.CreateOrUpdateConsumer(context.Background(), natsJs.ConsumerConfig{
+		Name:      consumerName,
+		AckPolicy: natsJs.AckExplicitPolicy,
+	})
 
 	var namer jetstream.ConsumerConfigurator
 	subscriber, err := jetstream.NewSubscriber(jetstream.SubscriberConfig{
@@ -71,13 +71,13 @@ func NewJetStreamSubscriber(config models.EventsConfiguration, topics []string) 
 		zap.L().Fatal("Failed to create JetStream subscriber", zap.Error(err))
 	}
 
-	return &JetStreamSubscriber{subscriber: subscriber}
+	return &JetStreamSubscriber{TopicName: config.TopicName, subscriber: subscriber}
 }
 
-func (s *JetStreamSubscriber) Subscribe(ctx context.Context, topic string) <-chan *message.Message {
-	sub, err := s.subscriber.Subscribe(ctx, topic)
+func (s *JetStreamSubscriber) Subscribe() <-chan *message.Message {
+	sub, err := s.subscriber.Subscribe(context.Background(), s.TopicName)
 	if err != nil {
-		zap.L().Fatal("Failed to subscribe to topic", zap.String("topic", topic), zap.Error(err))
+		zap.L().Fatal("Failed to subscribe to topic", zap.String("topic", s.TopicName), zap.Error(err))
 	}
 	return sub
 }
