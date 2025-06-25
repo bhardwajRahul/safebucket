@@ -54,10 +54,11 @@ type RedisConfiguration struct {
 }
 
 type StorageConfiguration struct {
-	Type string `mapstructure:"type" validate:"required,oneof=minio gcp"`
+	Type string `mapstructure:"type" validate:"required,oneof=minio gcp aws"`
 
-	GCP   *GCPConfiguration          `mapstructure:"gcp" validate:"required_if=Type gcp"`
 	Minio *MinioStorageConfiguration `mapstructure:"minio" validate:"required_if=Type minio"`
+	GCP   *GCPConfiguration          `mapstructure:"gcp" validate:"required_if=Type gcp"`
+	AWS   *AWSConfiguration          `mapstructure:"aws" validate:"required_if=Type aws"`
 }
 
 type MinioStorageConfiguration struct {
@@ -77,16 +78,22 @@ type GCPConfiguration struct {
 	SubscriptionName string `mapstructure:"subscription_name" validate:"required"`
 }
 
+type AWSConfiguration struct {
+	BucketName string `mapstructure:"bucket_name" default:"safebucket"`
+	SQSName    string `mapstructure:"sqs_name" validate:"required"`
+}
+
 type AdminConfiguration struct {
 	Username string `mapstructure:"username" validate:"required"`
 	Password string `mapstructure:"password" validate:"required"`
 }
 
 type EventsConfiguration struct {
-	Type string `mapstructure:"type" validate:"required,oneof=jetstream gcp"`
+	Type string `mapstructure:"type" validate:"required,oneof=jetstream gcp aws"`
 
-	GCP       *GCPConfiguration      `mapstructure:"gcp"`
-	Jetstream *JetStreamEventsConfig `mapstructure:"jetstream"`
+	Jetstream *JetStreamEventsConfig `mapstructure:"jetstream" validate:"required_if=Type jetstream"`
+	GCP       *GCPConfiguration      `mapstructure:"gcp" validate:"required_if=Type gcp"`
+	AWS       *AWSConfiguration      `mapstructure:"aws" validate:"required_if=Type aws"`
 }
 
 type JetStreamEventsConfig struct {

@@ -40,7 +40,7 @@ func main() {
 	notificationsSubscriber := core.NewSubscriber(config.Events)
 	notifications := notificationsSubscriber.Subscribe()
 
-	bucketEventsSubscriber := core.NewBucketEventsSubscriber(config.Storage)
+	bucketEventsSubscriber := core.NewBucketEventsSubscriber(config.Storage, storage)
 	bucketEvents := bucketEventsSubscriber.Subscribe()
 
 	model := rbac.GetModel()
@@ -73,7 +73,7 @@ func main() {
 
 	go events.HandleNotifications(config.Platform.WebUrl, mailer, notifications)
 
-	go events.HandleBucketEvents(db, activity, bucketEvents)
+	go events.HandleBucketEvents(bucketEventsSubscriber, db, activity, bucketEvents)
 
 	go func() {
 		err := cache.StartIdentityTicker(appIdentity)

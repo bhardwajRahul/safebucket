@@ -30,7 +30,7 @@ func NewS3Storage(config *models.MinioStorageConfiguration, bucketName string) I
 	}
 
 	if !exists {
-		zap.L().Error("Bucket does not exist.", zap.String("bucketName", bucketName))
+		zap.L().Error("Failed to retrieve bucket.", zap.String("bucketName", bucketName), zap.Error(err))
 	}
 
 	return S3Storage{BucketName: bucketName, storage: minioClient}
@@ -65,9 +65,14 @@ func (s S3Storage) PresignedPostPolicy(path string, size int, metadata map[strin
 	return url.String(), metadata, nil
 }
 
-func (s S3Storage) StatObject(path string) error {
-	_, err := s.storage.StatObject(context.Background(), s.BucketName, path, minio.StatObjectOptions{})
-	return err
+func (s S3Storage) StatObject(path string) (map[string]string, error) {
+	file, err := s.storage.StatObject(context.Background(), s.BucketName, path, minio.StatObjectOptions{})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return file.UserMetadata, err
 }
 
 func (s S3Storage) RemoveObject(path string) error {
