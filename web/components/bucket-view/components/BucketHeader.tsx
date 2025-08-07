@@ -1,4 +1,4 @@
-import React, { FC, useState } from "react";
+import React, { FC } from "react";
 
 import { PlusCircle } from "lucide-react";
 
@@ -9,13 +9,6 @@ import { useBucketViewContext } from "@/components/bucket-view/hooks/useBucketVi
 import { FormDialog } from "@/components/dialogs/components/FormDialog";
 import { useDialog } from "@/components/dialogs/hooks/useDialog";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { UploadPopover } from "@/components/upload/components/UploadPopover";
 import { useUploadContext } from "@/components/upload/hooks/useUploadContext";
 
@@ -26,7 +19,6 @@ interface IBucketHeaderProps {
 export const BucketHeader: FC<IBucketHeaderProps> = ({
   bucket,
 }: IBucketHeaderProps) => {
-  const [filterType, setFilterType] = useState("all");
   const shareFileDialog = useDialog();
 
   const { path } = useBucketViewContext();
@@ -38,21 +30,6 @@ export const BucketHeader: FC<IBucketHeaderProps> = ({
         <h1 className="text-2xl font-bold">{bucket.name}</h1>
         <div className="flex items-center gap-4">
           <BucketViewOptions />
-
-          <Select value={filterType} onValueChange={setFilterType}>
-            <SelectTrigger>
-              <SelectValue placeholder="Filter by type" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="pdf">PDF</SelectItem>
-              <SelectItem value="pptx">PowerPoint</SelectItem>
-              <SelectItem value="jpg">Image</SelectItem>
-              <SelectItem value="xlsx">Excel</SelectItem>
-              <SelectItem value="mp4">Video</SelectItem>
-              <SelectItem value="mp3">Audio</SelectItem>
-            </SelectContent>
-          </Select>
 
           <UploadPopover />
 

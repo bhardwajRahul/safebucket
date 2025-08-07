@@ -51,6 +51,7 @@ export enum BucketViewMode {
   List = "list",
   Grid = "grid",
   Activity = "activity",
+  Settings = "settings",
 }
 
 export type IDownloadFileResponse = {
@@ -62,3 +63,12 @@ export type IInviteResponse = {
   group: string
   status: string
 };
+
+export interface IBucketMember {
+  user_id?: string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  role: string;
+  status: "active" | "invited";
+}
