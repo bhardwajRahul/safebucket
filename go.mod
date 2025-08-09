@@ -4,7 +4,7 @@ go 1.23.0
 
 require (
 	cloud.google.com/go/storage v1.55.0
-	github.com/ThreeDotsLabs/watermill v1.4.1
+	github.com/ThreeDotsLabs/watermill v1.4.7
 	github.com/ThreeDotsLabs/watermill-aws v1.0.0
 	github.com/ThreeDotsLabs/watermill-googlecloud v1.2.4
 	github.com/ThreeDotsLabs/watermill-nats/v2 v2.1.2
