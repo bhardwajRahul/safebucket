@@ -73,6 +73,10 @@ admin:
 
 auth:
   providers:
+    local:
+      name: local
+      sharing:
+        enabled: true
 
 activity:
   type: loki
