@@ -6,6 +6,7 @@
   "auth": {
     "sign_in_title": "Connectez-vous à votre compte",
     "sign_in_subtitle": "Impossible de vous connecter ? Contactez votre administrateur.",
+    "continue_with": "Continuer avec {{name}}",
     "or_continue_with": "Ou continuez avec",
     "email": "E-mail",
     "email_placeholder": "nom@exemple.com",
@@ -76,6 +77,7 @@
   },
   "activity": {
     "title": "Flux d'activité",
+    "no_activity_yet": "Aucune activité pour le moment.",
     "messages": {
       "bucket_created": "A créé un bucket '%%BUCKET_NAME%%' et l'a partagé avec vous.",
       "file_uploaded": "A téléchargé un fichier '%%FILE_NAME%%' dans le bucket '%%BUCKET_NAME%%'.",

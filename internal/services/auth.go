@@ -7,11 +7,14 @@ import (
 	h "api/internal/helpers"
 	m "api/internal/middlewares"
 	"api/internal/models"
+	"api/internal/rbac/roles"
+	"api/internal/sql"
 	"context"
 	"errors"
 	"fmt"
 
 	"github.com/alexedwards/argon2id"
+	"github.com/casbin/casbin/v2"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -21,6 +24,7 @@ import (
 
 type AuthService struct {
 	DB        *gorm.DB
+	Enforcer  *casbin.Enforcer
 	JWTSecret string
 	Providers configuration.Providers
 	WebUrl    string
@@ -52,12 +56,12 @@ func (s AuthService) Login(_ models.UserClaims, _ uuid.UUIDs, body models.AuthLo
 			return models.AuthLoginResponse{}, errors.New("invalid email / password combination")
 		}
 
-		accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, configuration.AuthLocalProviderName)
+		accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, configuration.LocalAuthProviderType)
 		if err != nil {
 			return models.AuthLoginResponse{}, customerrors.ErrorGenerateAccessTokenFailed
 		}
 
-		refreshToken, err := h.NewRefreshToken(s.JWTSecret, &searchUser, configuration.AuthLocalProviderName)
+		refreshToken, err := h.NewRefreshToken(s.JWTSecret, &searchUser, configuration.LocalAuthProviderType)
 		if err != nil {
 			return models.AuthLoginResponse{}, customerrors.ErrorGenerateRefreshTokenFailed
 		}
@@ -89,6 +93,7 @@ func (s AuthService) GetProviderList(_ models.UserClaims, _ uuid.UUIDs) []models
 		providers[provider.Order] = models.ProviderResponse{
 			Id:   id,
 			Name: provider.Name,
+			Type: provider.Type,
 		}
 	}
 	return providers
@@ -139,7 +144,10 @@ func (s AuthService) OpenIDCallback(
 	searchUser := models.User{Email: userInfo.Email, IsExternal: true}
 	result := s.DB.Where("email = ?", searchUser.Email).First(&searchUser)
 	if result.RowsAffected == 0 {
-		s.DB.Create(&searchUser)
+		err = sql.CreateUserWithRole(s.DB, s.Enforcer, &searchUser, roles.AddUserToRoleUser)
+		if err != nil {
+			return "", "", err
+		}
 	}
 
 	accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, providerName)

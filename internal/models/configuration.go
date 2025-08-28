@@ -37,15 +37,20 @@ type AuthConfiguration struct {
 }
 
 type ProviderConfiguration struct {
-	Name                 string               `mapstructure:"name" validate:"required"`
-	ClientId             string               `mapstructure:"client_id" validate:"required"`
-	ClientSecret         string               `mapstructure:"client_secret" validate:"required"`
-	Issuer               string               `mapstructure:"issuer" validate:"required"`
+	Name                 string               `mapstructure:"name" validate:"required_if=Type oidc"`
+	Type                 string               `mapstructure:"type" validate:"required,oneof=local oidc"`
+	OIDC                 OIDCConfiguration    `mapstructure:"oidc" validate:"required_if=Type oidc"`
 	SharingConfiguration SharingConfiguration `mapstructure:"sharing"`
 }
 
+type OIDCConfiguration struct {
+	ClientId     string `mapstructure:"client_id" validate:"required_if=Type oidc"`
+	ClientSecret string `mapstructure:"client_secret" validate:"required_if=Type oidc"`
+	Issuer       string `mapstructure:"issuer" validate:"required_if=Type oidc"`
+}
+
 type SharingConfiguration struct {
-	Enabled        bool     `mapstructure:"enabled" default:"true"`
+	Allowed        bool     `mapstructure:"allowed" default:"true"`
 	AllowedDomains []string `mapstructure:"allowed_domains" validate:"dive,hostname_rfc1123"`
 }
 

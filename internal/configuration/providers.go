@@ -12,6 +12,7 @@ import (
 
 type Provider struct {
 	Name           string
+	Type           string
 	Provider       *oidc.Provider
 	Verifier       *oidc.IDTokenVerifier
 	OauthConfig    oauth2.Config
@@ -26,11 +27,27 @@ type ProvidersConfiguration map[string]models.ProviderConfiguration
 func LoadProviders(ctx context.Context, apiUrl string, providersCfg ProvidersConfiguration) Providers {
 	var providers = Providers{}
 	idx := 0
+	countLocalProviders := 0
 
 	for name, providerCfg := range providersCfg {
-		provider, err := oidc.NewProvider(ctx, providerCfg.Issuer)
+		if countLocalProviders == 0 && providerCfg.Type == LocalAuthProviderType {
+			providers[name] = Provider{
+				Name:           providerCfg.Type,
+				Type:           providerCfg.Type,
+				Order:          idx,
+				SharingOptions: providerCfg.SharingConfiguration,
+			}
+			countLocalProviders++
+			idx++
+			continue
+		} else if countLocalProviders > 0 && providerCfg.Type == LocalAuthProviderType {
+			zap.L().Warn("Only one local auth provider can be configured. Skipping...")
+			continue
+		}
+
+		provider, err := oidc.NewProvider(ctx, providerCfg.OIDC.Issuer)
 		if err != nil {
-			zap.L().Error(
+			zap.L().Fatal(
 				"Failed to load provider",
 				zap.String("name", name),
 				zap.Error(err),
@@ -38,18 +55,19 @@ func LoadProviders(ctx context.Context, apiUrl string, providersCfg ProvidersCon
 			continue
 		}
 
-		verifier := provider.Verifier(&oidc.Config{ClientID: providerCfg.ClientId})
+		verifier := provider.Verifier(&oidc.Config{ClientID: providerCfg.OIDC.ClientId})
 
 		oauthConfig := oauth2.Config{
-			ClientID:     providerCfg.ClientId,
-			ClientSecret: providerCfg.ClientSecret,
+			ClientID:     providerCfg.OIDC.ClientId,
+			ClientSecret: providerCfg.OIDC.ClientSecret,
 			Endpoint:     provider.Endpoint(),
-			RedirectURL:  fmt.Sprintf("%s/auth/providers/%s/callback", apiUrl, name),
+			RedirectURL:  fmt.Sprintf("%s/api/v1/auth/providers/%s/callback", apiUrl, name),
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		}
 
 		providers[name] = Provider{
 			Name:           providerCfg.Name,
+			Type:           providerCfg.Type,
 			Provider:       provider,
 			Verifier:       verifier,
 			OauthConfig:    oauthConfig,
@@ -62,8 +80,8 @@ func LoadProviders(ctx context.Context, apiUrl string, providersCfg ProvidersCon
 		zap.L().Info(
 			"Loaded auth provider",
 			zap.String("name", name),
-			zap.String("client_id", providerCfg.ClientId),
-			zap.String("issuer", providerCfg.Issuer),
+			zap.String("client_id", providerCfg.OIDC.ClientId),
+			zap.String("issuer", providerCfg.OIDC.Issuer),
 		)
 	}
 	return providers

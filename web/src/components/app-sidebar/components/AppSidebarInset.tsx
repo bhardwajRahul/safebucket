@@ -1,6 +1,5 @@
-import type { FC } from "react";
-
 import { Link } from "@tanstack/react-router";
+import type { FC } from "react";
 
 import {
   Breadcrumb,
@@ -37,7 +36,7 @@ export const AppSidebarInset: FC<IAppSidebarInset> = ({
                 <Link to={rootPath}>/</Link>
               </BreadcrumbLink>
               <BreadcrumbSeparator className="hidden md:block" />
-              {/*{pathShort.map((segment, index) => {*/}
+              {/* {pathShort.map((segment, index) => {*/}
               {/*  const isLast = index === pathShort.length - 1*/}
               {/*  const link = path.slice(0, index - 1).join('/')*/}
               {/*  return isLast ? (*/}
@@ -50,7 +49,7 @@ export const AppSidebarInset: FC<IAppSidebarInset> = ({
               {/*      <BreadcrumbSeparator className="hidden md:block" />*/}
               {/*    </React.Fragment>*/}
               {/*  )*/}
-              {/*})}*/}
+              {/* })}*/}
             </BreadcrumbList>
           </Breadcrumb>
         </div>

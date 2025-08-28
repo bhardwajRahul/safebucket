@@ -1,5 +1,5 @@
 app:
-  api_url: http://localhost:1323
+  api_url: http://localhost:8080
   web_url: http://localhost:3000
   allowed_origins:
     - http://127.0.0.1:3000
@@ -23,7 +23,7 @@ database:
   password: root
   name: safebucket
   user: root
-  sslmode: false
+  sslmode: disable
 
 cache:
   type: redis # or valkey
@@ -66,6 +66,31 @@ notifier:
     sender: notifications@safebucket.io
     enable_ssl: false      # Set to true for production SMTP servers
     skip_verify_ssl: true      # Set to false for production with valid certificates
+
+auth:
+  providers:
+    local:
+      type: local
+      sharing:
+        allowed: true
+#    okta:
+#      type: oidc
+#      name: Okta
+#      oidc:
+#        client_id:
+#        client_secret:
+#        issuer:
+#      sharing:
+#        allowed: true
+#    google:
+#      type: oidc
+#      name: Google
+#      oidc:
+#        client_id:
+#        client_secret:
+#        issuer:
+#      sharing:
+#        enabled: true
 
 activity:
   type: loki
