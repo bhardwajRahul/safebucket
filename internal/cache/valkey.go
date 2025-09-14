@@ -4,6 +4,7 @@ import (
 	"api/internal/configuration"
 	"api/internal/models"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"time"
 
@@ -17,10 +18,19 @@ type ValkeyCache struct {
 
 func NewValkeyCache(cacheConfig models.ValkeyCacheConfiguration) (*ValkeyCache, error) {
 
-	client, err := rueidis.NewClient(rueidis.ClientOption{
+	clientOption := rueidis.ClientOption{
 		InitAddress: cacheConfig.Hosts,
 		Password:    cacheConfig.Password,
-	})
+	}
+
+	if cacheConfig.TLSEnabled {
+		clientOption.TLSConfig = &tls.Config{
+			ServerName: cacheConfig.TLSServerName,
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+	client, err := rueidis.NewClient(clientOption)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to valkey: %w", err)
 	}
