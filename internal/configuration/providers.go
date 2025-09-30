@@ -12,7 +12,8 @@ import (
 
 type Provider struct {
 	Name           string
-	Type           string
+	Type           models.ProviderType
+	Domains        []string
 	Provider       *oidc.Provider
 	Verifier       *oidc.IDTokenVerifier
 	OauthConfig    oauth2.Config
@@ -30,19 +31,19 @@ func LoadProviders(ctx context.Context, apiUrl string, providersCfg ProvidersCon
 	countLocalProviders := 0
 
 	for name, providerCfg := range providersCfg {
-		if countLocalProviders == 0 && providerCfg.Type == LocalAuthProviderType {
+		if countLocalProviders == 0 && providerCfg.Type == models.LocalProviderType {
 			providers[name] = Provider{
-				Name:           providerCfg.Type,
+				Name:           string(providerCfg.Type),
 				Type:           providerCfg.Type,
 				Order:          idx,
+				Domains:        providerCfg.Domains,
 				SharingOptions: providerCfg.SharingConfiguration,
 			}
 			countLocalProviders++
 			idx++
 			continue
-		} else if countLocalProviders > 0 && providerCfg.Type == LocalAuthProviderType {
-			zap.L().Warn("Only one local auth provider can be configured. Skipping...")
-			continue
+		} else if countLocalProviders > 0 && providerCfg.Type == models.LocalProviderType {
+			zap.L().Fatal("Only one local auth provider can be configured.")
 		}
 
 		provider, err := oidc.NewProvider(ctx, providerCfg.OIDC.Issuer)
@@ -68,6 +69,7 @@ func LoadProviders(ctx context.Context, apiUrl string, providersCfg ProvidersCon
 		providers[name] = Provider{
 			Name:           providerCfg.Name,
 			Type:           providerCfg.Type,
+			Domains:        providerCfg.Domains,
 			Provider:       provider,
 			Verifier:       verifier,
 			OauthConfig:    oauthConfig,
@@ -82,6 +84,7 @@ func LoadProviders(ctx context.Context, apiUrl string, providersCfg ProvidersCon
 			zap.String("name", name),
 			zap.String("client_id", providerCfg.OIDC.ClientId),
 			zap.String("issuer", providerCfg.OIDC.Issuer),
+			zap.Any("domains", providerCfg.Domains),
 		)
 	}
 	return providers

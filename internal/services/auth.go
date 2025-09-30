@@ -2,7 +2,7 @@ package services
 
 import (
 	"api/internal/configuration"
-	customerrors "api/internal/errors"
+	customerr "api/internal/errors"
 	"api/internal/handlers"
 	h "api/internal/helpers"
 	m "api/internal/middlewares"
@@ -48,8 +48,18 @@ func (s AuthService) Routes() chi.Router {
 	return r
 }
 
-func (s AuthService) Login(_ *zap.Logger, _ models.UserClaims, _ uuid.UUIDs, body models.AuthLogin) (models.AuthLoginResponse, error) {
-	searchUser := models.User{Email: body.Email, IsExternal: false}
+func (s AuthService) Login(logger *zap.Logger, _ models.UserClaims, _ uuid.UUIDs, body models.AuthLogin) (models.AuthLoginResponse, error) {
+	if _, ok := s.Providers[string(models.LocalProviderType)]; !ok {
+		logger.Debug("Local auth provider not activated in the configuration")
+		return models.AuthLoginResponse{}, customerr.NewAPIError(403, "FORBIDDEN")
+	}
+
+	if !h.IsDomainAllowed(body.Email, s.Providers[string(models.LocalProviderType)].Domains) {
+		logger.Debug("Domain not allowed")
+		return models.AuthLoginResponse{}, customerr.NewAPIError(403, "FORBIDDEN")
+	}
+
+	searchUser := models.User{Email: body.Email, ProviderType: models.LocalProviderType, ProviderKey: string(models.LocalProviderType)}
 	result := s.DB.Where("email = ?", searchUser.Email).First(&searchUser)
 	if result.RowsAffected == 1 {
 		match, err := argon2id.ComparePasswordAndHash(body.Password, searchUser.HashedPassword)
@@ -57,14 +67,14 @@ func (s AuthService) Login(_ *zap.Logger, _ models.UserClaims, _ uuid.UUIDs, bod
 			return models.AuthLoginResponse{}, errors.New("invalid email / password combination")
 		}
 
-		accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, configuration.LocalAuthProviderType)
+		accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, string(models.LocalProviderType))
 		if err != nil {
-			return models.AuthLoginResponse{}, customerrors.ErrorGenerateAccessTokenFailed
+			return models.AuthLoginResponse{}, customerr.ErrorGenerateAccessTokenFailed
 		}
 
-		refreshToken, err := h.NewRefreshToken(s.JWTSecret, &searchUser, configuration.LocalAuthProviderType)
+		refreshToken, err := h.NewRefreshToken(s.JWTSecret, &searchUser, string(models.LocalProviderType))
 		if err != nil {
-			return models.AuthLoginResponse{}, customerrors.ErrorGenerateRefreshTokenFailed
+			return models.AuthLoginResponse{}, customerr.ErrorGenerateRefreshTokenFailed
 		}
 
 		return models.AuthLoginResponse{AccessToken: accessToken, RefreshToken: refreshToken}, nil
@@ -91,10 +101,15 @@ func (s AuthService) Refresh(_ *zap.Logger, _ models.UserClaims, _ uuid.UUIDs, b
 func (s AuthService) GetProviderList(_ *zap.Logger, _ models.UserClaims, _ uuid.UUIDs) []models.ProviderResponse {
 	var providers = make([]models.ProviderResponse, len(s.Providers))
 	for id, provider := range s.Providers {
+		if len(provider.Domains) == 0 {
+			provider.Domains = []string{}
+		}
+
 		providers[provider.Order] = models.ProviderResponse{
-			Id:   id,
-			Name: provider.Name,
-			Type: provider.Type,
+			Id:      id,
+			Name:    provider.Name,
+			Type:    provider.Type,
+			Domains: provider.Domains,
 		}
 	}
 	return providers
@@ -111,9 +126,9 @@ func (s AuthService) OpenIDBegin(providerName string, state string, nonce string
 }
 
 func (s AuthService) OpenIDCallback(
-	ctx context.Context, providerName string, code string, nonce string,
+	ctx context.Context, logger *zap.Logger, providerKey string, code string, nonce string,
 ) (string, string, error) {
-	provider, ok := s.Providers[providerName]
+	provider, ok := s.Providers[providerKey]
 	if !ok {
 		return "", "", fmt.Errorf("provider not found")
 	}
@@ -142,23 +157,31 @@ func (s AuthService) OpenIDCallback(
 		return "", "", fmt.Errorf("failed to get user info %s", err.Error())
 	}
 
-	searchUser := models.User{Email: userInfo.Email, IsExternal: true}
+	if !h.IsDomainAllowed(userInfo.Email, s.Providers[providerKey].Domains) {
+		logger.Debug("Domain not allowed")
+		return "", "", customerr.NewAPIError(403, "FORBIDDEN")
+	}
+
+	searchUser := models.User{Email: userInfo.Email, ProviderType: models.OIDCProviderType, ProviderKey: providerKey}
 	result := s.DB.Where("email = ?", searchUser.Email).First(&searchUser)
 	if result.RowsAffected == 0 {
-		err = sql.CreateUserWithRole(s.DB, s.Enforcer, &searchUser, roles.AddUserToRoleUser)
+		searchUser.ProviderType = models.OIDCProviderType
+		searchUser.ProviderKey = providerKey
+
+		err := sql.CreateUserWithRoleAndInvites(logger, s.DB, s.Enforcer, &searchUser, roles.AddUserToRoleUser)
 		if err != nil {
-			return "", "", err
+			return "", "", customerr.NewAPIError(500, "INTERNAL_SERVER_ERROR")
 		}
 	}
 
-	accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, providerName)
+	accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, providerKey)
 	if err != nil {
-		return "", "", customerrors.ErrorGenerateAccessTokenFailed
+		return "", "", customerr.ErrorGenerateAccessTokenFailed
 	}
 
-	refreshToken, err := h.NewRefreshToken(s.JWTSecret, &searchUser, providerName)
+	refreshToken, err := h.NewRefreshToken(s.JWTSecret, &searchUser, providerKey)
 	if err != nil {
-		return "", "", customerrors.ErrorGenerateRefreshTokenFailed
+		return "", "", customerr.ErrorGenerateRefreshTokenFailed
 	}
 
 	return accessToken, refreshToken, nil

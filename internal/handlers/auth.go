@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	customErr "api/internal/errors"
 	h "api/internal/helpers"
+	m "api/internal/middlewares"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -12,7 +15,7 @@ import (
 )
 
 type OpenIDBeginFunc func(string, string, string) (string, error)
-type OpenIDCallbackFunc func(context.Context, string, string, string) (string, string, error)
+type OpenIDCallbackFunc func(context.Context, *zap.Logger, string, string, string) (string, string, error)
 
 func OpenIDBeginHandler(openidBegin OpenIDBeginFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -55,16 +58,24 @@ func OpenIDCallbackHandler(webUrl string, openidCallback OpenIDCallbackFunc) htt
 			return
 		}
 
+		logger := m.GetLogger(r)
+
 		accessToken, refreshToken, err := openidCallback(
 			r.Context(),
+			logger,
 			providerName,
 			r.URL.Query().Get("code"),
 			nonce.Value,
 		)
 
 		if err != nil {
-			zap.L().Error("Error in OpenIDCallback", zap.Error(err))
-			h.RespondWithError(w, http.StatusInternalServerError, []string{err.Error()})
+			strErrors := []string{err.Error()}
+			var apiErr *customErr.APIError
+			if errors.As(err, &apiErr) {
+				h.RespondWithError(w, apiErr.Code, strErrors)
+			} else {
+				h.RespondWithError(w, http.StatusInternalServerError, strErrors)
+			}
 			return
 		}
 

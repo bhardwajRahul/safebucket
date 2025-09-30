@@ -12,7 +12,8 @@
     "email_placeholder": "nom@exemple.com",
     "password": "Mot de passe",
     "forgot_password": "Mot de passe oublié ?",
-    "sign_in": "Se connecter"
+    "sign_in": "Se connecter",
+    "continue": "Continuer"
   },
   "homepage": {
     "welcome": "Bienvenue {{firstName}} !",
@@ -181,6 +182,32 @@
       "description": "Sélectionnez votre langue préférée",
       "english": "Anglais",
       "french": "Français"
+    }
+  },
+  "invites": {
+    "smart_enrollment": {
+      "title": "Rejoindre avec votre compte",
+      "description": "Choisissez votre méthode de connexion préférée pour accepter cette invitation",
+      "email_label": "Adresse e-mail",
+      "email_placeholder": "nom@exemple.com",
+      "email_required": "L'e-mail est requis",
+      "email_invalid": "Veuillez saisir une adresse e-mail valide",
+      "send_button": "Envoyer le code de vérification",
+      "sending_button": "Envoi du code...",
+      "send_error": "Échec de l'envoi du code de vérification. Veuillez réessayer.",
+      "footer_text": "En continuant, vous acceptez cette invitation et acceptez de créer un compte"
+    },
+    "challenge_validation": {
+      "title": "Saisissez votre code de vérification",
+      "description": "Saisissez le code de vérification à 6 chiffres qui a été envoyé à votre adresse e-mail pour terminer la création de votre compte",
+      "code_label": "Code de vérification à 6 chiffres",
+      "validate_button": "Valider le code",
+      "validating_button": "Validation...",
+      "code_length_error": "Le code de vérification doit contenir exactement 6 chiffres",
+      "code_invalid_error": "Code de vérification invalide. Veuillez vérifier votre e-mail et réessayer.",
+      "success_title": "Code validé avec succès",
+      "success_description": "Votre code de vérification a été validé. Votre compte a été créé et vous pouvez maintenant accéder à l'invitation.",
+      "footer_text": "Vous n'avez pas reçu le code ? Vérifiez votre dossier spam ou demandez-en un nouveau"
     }
   }
 }

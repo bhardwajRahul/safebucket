@@ -48,15 +48,17 @@ func main() {
 	// TODO: Create a dedicated fct
 
 	adminUser := models.User{
-		FirstName: "admin",
-		LastName:  "admin",
-		Email:     config.App.AdminEmail,
+		FirstName:    "admin",
+		LastName:     "admin",
+		Email:        config.App.AdminEmail,
+		ProviderType: models.LocalProviderType,
+		ProviderKey:  string(models.LocalProviderType),
 	}
 
 	hash, _ := h.CreateHash(config.App.AdminPassword)
 	adminUser.HashedPassword = hash
 	db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "email"}},
+		Columns:   []clause.Column{{Name: "email"}, {Name: "provider_key"}},
 		DoUpdates: clause.AssignmentColumns([]string{"hashed_password"}),
 	}).Create(&adminUser)
 	_ = roles.AddUserToRoleAdmin(enforcer, adminUser)
