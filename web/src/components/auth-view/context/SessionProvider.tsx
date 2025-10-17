@@ -14,15 +14,20 @@ import type {
   Status,
 } from "@/components/auth-view/types/session";
 import { SessionContext } from "@/components/auth-view/hooks/useSessionContext";
-import { router } from "@/main.tsx";
 import { api, fetchApi } from "@/lib/api";
 import { getApiUrl } from "@/hooks/useConfig.ts";
 
+interface SessionProviderProps {
+  children: React.ReactNode;
+  navigateToLogin?: () => void;
+  navigateToComplete?: () => void;
+}
+
 export const SessionProvider = ({
   children,
-}: {
-  children: React.ReactNode;
-}) => {
+  navigateToLogin,
+  navigateToComplete,
+}: SessionProviderProps) => {
   const [accessToken, setAccessToken] = useState(
     Cookies.get("safebucket_access_token"),
   );
@@ -55,11 +60,20 @@ export const SessionProvider = ({
     } else {
       setSession(null);
       setStatus("unauthenticated");
-      if (!location.pathname.startsWith("/invites/")) {
-        router.navigate({ to: "/auth/login" });
+      if (
+        !location.pathname.startsWith("/invites/") &&
+        !location.pathname.startsWith("/auth/reset-password") &&
+        !location.pathname.startsWith("/auth/login") &&
+        !location.pathname.startsWith("/auth/")
+      ) {
+        if (navigateToLogin) {
+          navigateToLogin();
+        } else {
+          window.location.href = "/auth/login";
+        }
       }
     }
-  }, [router, accessToken, refreshToken, authProvider]);
+  }, [navigateToLogin, accessToken, refreshToken, authProvider]);
 
   const login = async (provider: string) => {
     setStatus("loading");
@@ -76,7 +90,11 @@ export const SessionProvider = ({
       setRefreshToken(res.refresh_token);
       Cookies.set("safebucket_auth_provider", "local");
       setAuthProvider("local");
-      router.navigate({ to: "/auth/complete" });
+      if (navigateToComplete) {
+        navigateToComplete();
+      } else {
+        window.location.href = "/auth/complete";
+      }
     });
   };
 
@@ -85,6 +103,16 @@ export const SessionProvider = ({
     setAccessToken(undefined);
     Cookies.remove("safebucket_auth_provider");
     setAuthProvider(undefined);
+  };
+
+  const setAuthenticationState = (
+    accessToken: string,
+    refreshToken: string,
+    provider: string,
+  ) => {
+    setAccessToken(accessToken);
+    setRefreshToken(refreshToken);
+    setAuthProvider(provider);
   };
 
   return (
@@ -96,6 +124,7 @@ export const SessionProvider = ({
         handleSubmit,
         watch,
         logout,
+        setAuthenticationState,
         session,
         status,
       }}

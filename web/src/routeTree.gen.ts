@@ -13,9 +13,11 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as ActivityIndexRouteImport } from './routes/activity/index'
 import { Route as InvitesIdIndexRouteImport } from './routes/invites/$id/index'
+import { Route as AuthResetPasswordIndexRouteImport } from './routes/auth/reset-password/index'
 import { Route as AuthLoginIndexRouteImport } from './routes/auth/login/index'
 import { Route as AuthCompleteIndexRouteImport } from './routes/auth/complete/index'
 import { Route as BucketsIdChar123PathChar125RouteImport } from './routes/buckets/$id/{-$path}'
+import { Route as AuthResetPasswordIdIndexRouteImport } from './routes/auth/reset-password/$id/index'
 import { Route as InvitesIdChallengesChallengeIdIndexRouteImport } from './routes/invites/$id/challenges/$challengeId/index'
 
 const IndexRoute = IndexRouteImport.update({
@@ -38,6 +40,11 @@ const InvitesIdIndexRoute = InvitesIdIndexRouteImport.update({
   path: '/invites/$id/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthResetPasswordIndexRoute = AuthResetPasswordIndexRouteImport.update({
+  id: '/auth/reset-password/',
+  path: '/auth/reset-password/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthLoginIndexRoute = AuthLoginIndexRouteImport.update({
   id: '/auth/login/',
   path: '/auth/login/',
@@ -54,6 +61,12 @@ const BucketsIdChar123PathChar125Route =
     path: '/buckets/$id/{-$path}',
     getParentRoute: () => rootRouteImport,
   } as any)
+const AuthResetPasswordIdIndexRoute =
+  AuthResetPasswordIdIndexRouteImport.update({
+    id: '/auth/reset-password/$id/',
+    path: '/auth/reset-password/$id/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const InvitesIdChallengesChallengeIdIndexRoute =
   InvitesIdChallengesChallengeIdIndexRouteImport.update({
     id: '/invites/$id/challenges/$challengeId/',
@@ -68,7 +81,9 @@ export interface FileRoutesByFullPath {
   '/buckets/$id/{-$path}': typeof BucketsIdChar123PathChar125Route
   '/auth/complete': typeof AuthCompleteIndexRoute
   '/auth/login': typeof AuthLoginIndexRoute
+  '/auth/reset-password': typeof AuthResetPasswordIndexRoute
   '/invites/$id': typeof InvitesIdIndexRoute
+  '/auth/reset-password/$id': typeof AuthResetPasswordIdIndexRoute
   '/invites/$id/challenges/$challengeId': typeof InvitesIdChallengesChallengeIdIndexRoute
 }
 export interface FileRoutesByTo {
@@ -78,7 +93,9 @@ export interface FileRoutesByTo {
   '/buckets/$id/{-$path}': typeof BucketsIdChar123PathChar125Route
   '/auth/complete': typeof AuthCompleteIndexRoute
   '/auth/login': typeof AuthLoginIndexRoute
+  '/auth/reset-password': typeof AuthResetPasswordIndexRoute
   '/invites/$id': typeof InvitesIdIndexRoute
+  '/auth/reset-password/$id': typeof AuthResetPasswordIdIndexRoute
   '/invites/$id/challenges/$challengeId': typeof InvitesIdChallengesChallengeIdIndexRoute
 }
 export interface FileRoutesById {
@@ -89,7 +106,9 @@ export interface FileRoutesById {
   '/buckets/$id/{-$path}': typeof BucketsIdChar123PathChar125Route
   '/auth/complete/': typeof AuthCompleteIndexRoute
   '/auth/login/': typeof AuthLoginIndexRoute
+  '/auth/reset-password/': typeof AuthResetPasswordIndexRoute
   '/invites/$id/': typeof InvitesIdIndexRoute
+  '/auth/reset-password/$id/': typeof AuthResetPasswordIdIndexRoute
   '/invites/$id/challenges/$challengeId/': typeof InvitesIdChallengesChallengeIdIndexRoute
 }
 export interface FileRouteTypes {
@@ -101,7 +120,9 @@ export interface FileRouteTypes {
     | '/buckets/$id/{-$path}'
     | '/auth/complete'
     | '/auth/login'
+    | '/auth/reset-password'
     | '/invites/$id'
+    | '/auth/reset-password/$id'
     | '/invites/$id/challenges/$challengeId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -111,7 +132,9 @@ export interface FileRouteTypes {
     | '/buckets/$id/{-$path}'
     | '/auth/complete'
     | '/auth/login'
+    | '/auth/reset-password'
     | '/invites/$id'
+    | '/auth/reset-password/$id'
     | '/invites/$id/challenges/$challengeId'
   id:
     | '__root__'
@@ -121,7 +144,9 @@ export interface FileRouteTypes {
     | '/buckets/$id/{-$path}'
     | '/auth/complete/'
     | '/auth/login/'
+    | '/auth/reset-password/'
     | '/invites/$id/'
+    | '/auth/reset-password/$id/'
     | '/invites/$id/challenges/$challengeId/'
   fileRoutesById: FileRoutesById
 }
@@ -132,7 +157,9 @@ export interface RootRouteChildren {
   BucketsIdChar123PathChar125Route: typeof BucketsIdChar123PathChar125Route
   AuthCompleteIndexRoute: typeof AuthCompleteIndexRoute
   AuthLoginIndexRoute: typeof AuthLoginIndexRoute
+  AuthResetPasswordIndexRoute: typeof AuthResetPasswordIndexRoute
   InvitesIdIndexRoute: typeof InvitesIdIndexRoute
+  AuthResetPasswordIdIndexRoute: typeof AuthResetPasswordIdIndexRoute
   InvitesIdChallengesChallengeIdIndexRoute: typeof InvitesIdChallengesChallengeIdIndexRoute
 }
 
@@ -166,6 +193,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InvitesIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/reset-password/': {
+      id: '/auth/reset-password/'
+      path: '/auth/reset-password'
+      fullPath: '/auth/reset-password'
+      preLoaderRoute: typeof AuthResetPasswordIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/auth/login/': {
       id: '/auth/login/'
       path: '/auth/login'
@@ -187,6 +221,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BucketsIdChar123PathChar125RouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/reset-password/$id/': {
+      id: '/auth/reset-password/$id/'
+      path: '/auth/reset-password/$id'
+      fullPath: '/auth/reset-password/$id'
+      preLoaderRoute: typeof AuthResetPasswordIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/invites/$id/challenges/$challengeId/': {
       id: '/invites/$id/challenges/$challengeId/'
       path: '/invites/$id/challenges/$challengeId'
@@ -204,7 +245,9 @@ const rootRouteChildren: RootRouteChildren = {
   BucketsIdChar123PathChar125Route: BucketsIdChar123PathChar125Route,
   AuthCompleteIndexRoute: AuthCompleteIndexRoute,
   AuthLoginIndexRoute: AuthLoginIndexRoute,
+  AuthResetPasswordIndexRoute: AuthResetPasswordIndexRoute,
   InvitesIdIndexRoute: InvitesIdIndexRoute,
+  AuthResetPasswordIdIndexRoute: AuthResetPasswordIdIndexRoute,
   InvitesIdChallengesChallengeIdIndexRoute:
     InvitesIdChallengesChallengeIdIndexRoute,
 }
