@@ -97,3 +97,46 @@ func (s *GCPSubscriber) ParseBucketUploadEvents(message *message.Message) []Buck
 	}
 	return uploadEvents
 }
+
+func (s *GCPSubscriber) ParseBucketDeletionEvents(message *message.Message) []BucketDeletionEvent {
+	var deletionEvents []BucketDeletionEvent
+
+	eventType := message.Metadata["eventType"]
+	if eventType == "OBJECT_DELETE" {
+		objectKey := message.Metadata["objectId"]
+		if objectKey == "" {
+			objectKey = message.Metadata["name"]
+		}
+
+		if objectKey == "" {
+			zap.L().Warn("deletion event missing object key",
+				zap.Any("metadata", message.Metadata))
+			message.Ack()
+			return nil
+		}
+
+		bucketId := message.Metadata["bucket-id"]
+
+		if bucketId == "" {
+			zap.L().Warn("unable to extract bucket ID from object key",
+				zap.String("object_key", objectKey))
+			message.Ack()
+			return nil
+		}
+
+		deletionEvents = append(deletionEvents, BucketDeletionEvent{
+			BucketId:  bucketId,
+			ObjectKey: objectKey,
+			EventName: eventType,
+		})
+
+		zap.L().Debug("parsed GCP deletion event",
+			zap.String("event_type", eventType),
+			zap.String("bucket_id", bucketId),
+			zap.String("object_key", objectKey))
+
+		message.Ack()
+	}
+
+	return deletionEvents
+}

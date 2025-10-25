@@ -1,4 +1,4 @@
-import { FolderClock, LayoutGrid, LayoutList, Settings } from "lucide-react";
+import { FolderClock, LayoutGrid, LayoutList, Settings, Trash2 } from "lucide-react";
 import { t } from "i18next";
 import type { FC } from "react";
 
@@ -28,6 +28,11 @@ const options = [
     key: BucketViewMode.Activity,
     value: <FolderClock />,
     tooltip: t("bucket.header.activity"),
+  },
+  {
+    key: BucketViewMode.Trash,
+    value: <Trash2 />,
+    tooltip: t("bucket.header.trash"),
   },
   {
     key: BucketViewMode.Settings,

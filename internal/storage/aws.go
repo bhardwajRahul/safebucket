@@ -169,3 +169,71 @@ func (a AWSStorage) RemoveObjects(paths []string) error {
 
 	return nil
 }
+
+func (a AWSStorage) SetObjectTags(path string, tagMap map[string]string) error {
+	var tagSet []types.Tag
+	for key, value := range tagMap {
+		tagSet = append(tagSet, types.Tag{
+			Key:   aws.String(key),
+			Value: aws.String(value),
+		})
+	}
+
+	_, err := a.storage.PutObjectTagging(context.Background(), &s3.PutObjectTaggingInput{
+		Bucket: aws.String(a.BucketName),
+		Key:    aws.String(path),
+		Tagging: &types.Tagging{
+			TagSet: tagSet,
+		},
+	})
+	return err
+}
+
+func (a AWSStorage) GetObjectTags(path string) (map[string]string, error) {
+	tagsOutput, err := a.storage.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
+		Bucket: aws.String(a.BucketName),
+		Key:    aws.String(path),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	tagMap := make(map[string]string)
+	for _, tag := range tagsOutput.TagSet {
+		if tag.Key != nil && tag.Value != nil {
+			tagMap[*tag.Key] = *tag.Value
+		}
+	}
+	return tagMap, nil
+}
+
+func (a AWSStorage) RemoveObjectTags(path string, tagsToRemove []string) error {
+	tagsOutput, err := a.storage.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
+		Bucket: aws.String(a.BucketName),
+		Key:    aws.String(path),
+	})
+	if err != nil {
+		return err
+	}
+
+	removeSet := make(map[string]bool)
+	for _, key := range tagsToRemove {
+		removeSet[key] = true
+	}
+
+	var filteredTags []types.Tag
+	for _, tag := range tagsOutput.TagSet {
+		if tag.Key != nil && !removeSet[*tag.Key] {
+			filteredTags = append(filteredTags, tag)
+		}
+	}
+
+	_, err = a.storage.PutObjectTagging(context.Background(), &s3.PutObjectTaggingInput{
+		Bucket: aws.String(a.BucketName),
+		Key:    aws.String(path),
+		Tagging: &types.Tagging{
+			TagSet: filteredTags,
+		},
+	})
+	return err
+}
