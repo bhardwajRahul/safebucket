@@ -35,14 +35,14 @@ func NewLogger(level string) {
 	zap.ReplaceGlobals(logger)
 
 	defer func(logger *zap.Logger) {
-		err := logger.Sync()
+		err = logger.Sync()
 		if err != nil && !isIgnorableLogSyncError(err) {
 			panic(err)
 		}
 	}(logger)
 }
 
-// isIgnorableLogSyncError returns true for errors that can be safely ignored during logger sync
+// isIgnorableLogSyncError returns true for errors that can be safely ignored during logger sync.
 func isIgnorableLogSyncError(err error) bool {
 	// Standard UNIX not-a-terminal error
 	if errors.Is(err, syscall.ENOTTY) {

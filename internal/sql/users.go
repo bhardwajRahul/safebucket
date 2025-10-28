@@ -9,7 +9,7 @@ import (
 )
 
 // CreateUserWithInvites creates a user and processes any pending invites
-// Converting them to memberships in a single transaction
+// Converting them to memberships in a single transaction.
 func CreateUserWithInvites(
 	logger *zap.Logger,
 	db *gorm.DB,
@@ -28,7 +28,7 @@ func CreateUserWithInvites(
 		}
 
 		for _, invite := range invites {
-			if err := rbac.CreateMembership(tx, user.ID, invite.BucketID, models.Group(invite.Group)); err != nil {
+			if err := rbac.CreateMembership(tx, user.ID, invite.BucketID, invite.Group); err != nil {
 				logger.Error("Failed to create membership from invite", zap.Error(err),
 					zap.String("group", string(invite.Group)),
 					zap.String("bucket_id", invite.BucketID.String()))

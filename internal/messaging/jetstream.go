@@ -1,12 +1,15 @@
 package messaging
 
 import (
-	"api/internal/models"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"api/internal/models"
+
+	"net"
 
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill-nats/v2/pkg/jetstream"
@@ -22,7 +25,10 @@ type JetStreamPublisher struct {
 }
 
 func NewJetStreamPublisher(config *models.JetStreamEventsConfig, topicName string) IPublisher {
-	nc, _ := nats.Connect(fmt.Sprintf("nats://%s:%s", config.Host, config.Port))
+	nc, err := nats.Connect(net.JoinHostPort(config.Host, config.Port))
+	if err != nil {
+		zap.L().Fatal("Failed to connect to NATS", zap.Error(err))
+	}
 
 	publisher, err := jetstream.NewPublisher(jetstream.PublisherConfig{
 		Conn: nc,
@@ -48,7 +54,7 @@ type JetStreamSubscriber struct {
 }
 
 func NewJetStreamSubscriber(config *models.JetStreamEventsConfig, topicName string) ISubscriber {
-	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%s", config.Host, config.Port))
+	nc, err := nats.Connect(net.JoinHostPort(config.Host, config.Port))
 	if err != nil {
 		zap.L().Fatal("Failed to connect to NATS", zap.Error(err))
 	}
@@ -98,7 +104,8 @@ func NewJetStreamSubscriber(config *models.JetStreamEventsConfig, topicName stri
 func (s *JetStreamSubscriber) Subscribe() <-chan *message.Message {
 	sub, err := s.subscriber.Subscribe(context.Background(), s.TopicName)
 	if err != nil {
-		zap.L().Fatal("Failed to subscribe to topic", zap.String("topic", s.TopicName), zap.Error(err))
+		zap.L().
+			Fatal("Failed to subscribe to topic", zap.String("topic", s.TopicName), zap.Error(err))
 	}
 	return sub
 }
@@ -107,7 +114,9 @@ func (s *JetStreamSubscriber) Close() error {
 	return s.subscriber.Close()
 }
 
-func (s *JetStreamSubscriber) ParseBucketUploadEvents(message *message.Message) []BucketUploadEvent {
+func (s *JetStreamSubscriber) ParseBucketUploadEvents(
+	message *message.Message,
+) []BucketUploadEvent {
 	var event MinioEvent
 	if err := json.Unmarshal(message.Payload, &event); err != nil {
 		zap.L().Error("event is unprocessable", zap.Error(err))
@@ -117,14 +126,14 @@ func (s *JetStreamSubscriber) ParseBucketUploadEvents(message *message.Message) 
 	var uploadEvents []BucketUploadEvent
 	for _, event := range event.Records {
 		if event.EventName == "s3:ObjectCreated:Post" {
-			bucketId := event.S3.Object.UserMetadata["X-Amz-Meta-Bucket-Id"]
-			fileId := event.S3.Object.UserMetadata["X-Amz-Meta-File-Id"]
-			userId := event.S3.Object.UserMetadata["X-Amz-Meta-User-Id"]
+			bucketID := event.S3.Object.UserMetadata["X-Amz-Meta-Bucket-Id"]
+			fileID := event.S3.Object.UserMetadata["X-Amz-Meta-File-Id"]
+			userID := event.S3.Object.UserMetadata["X-Amz-Meta-User-Id"]
 
 			uploadEvents = append(uploadEvents, BucketUploadEvent{
-				BucketId: bucketId,
-				FileId:   fileId,
-				UserId:   userId,
+				BucketID: bucketID,
+				FileID:   fileID,
+				UserID:   userID,
 			})
 
 			message.Ack()
@@ -138,7 +147,9 @@ func (s *JetStreamSubscriber) ParseBucketUploadEvents(message *message.Message) 
 	return uploadEvents
 }
 
-func (s *JetStreamSubscriber) ParseBucketDeletionEvents(message *message.Message) []BucketDeletionEvent {
+func (s *JetStreamSubscriber) ParseBucketDeletionEvents(
+	message *message.Message,
+) []BucketDeletionEvent {
 	var event MinioEvent
 	if err := json.Unmarshal(message.Payload, &event); err != nil {
 		zap.L().Error("deletion event is unprocessable", zap.Error(err))
@@ -150,31 +161,30 @@ func (s *JetStreamSubscriber) ParseBucketDeletionEvents(message *message.Message
 	for _, record := range event.Records {
 		if strings.HasPrefix(record.EventName, "s3:ObjectRemoved:") ||
 			strings.HasPrefix(record.EventName, "s3:LifecycleExpiration:") {
-
 			objectKey := record.S3.Object.Key
-			var bucketId string
+			var bucketID string
 			if strings.HasPrefix(objectKey, "buckets/") {
 				parts := strings.Split(objectKey, "/")
 				if len(parts) >= 2 {
-					bucketId = parts[1]
+					bucketID = parts[1]
 				}
 			}
 
-			if bucketId == "" {
+			if bucketID == "" {
 				zap.L().Warn("unable to extract bucket ID from object key",
 					zap.String("object_key", objectKey))
 				continue
 			}
 
 			deletionEvents = append(deletionEvents, BucketDeletionEvent{
-				BucketId:  bucketId,
+				BucketID:  bucketID,
 				ObjectKey: objectKey,
 				EventName: record.EventName,
 			})
 
 			zap.L().Debug("parsed deletion event",
 				zap.String("event_name", record.EventName),
-				zap.String("bucket_id", bucketId),
+				zap.String("bucket_id", bucketID),
 				zap.String("object_key", objectKey))
 		}
 	}

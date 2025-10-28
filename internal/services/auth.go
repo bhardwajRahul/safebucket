@@ -1,6 +1,12 @@
 package services
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
 	"api/internal/activity"
 	"api/internal/configuration"
 	customerr "api/internal/errors"
@@ -11,11 +17,6 @@ import (
 	m "api/internal/middlewares"
 	"api/internal/models"
 	"api/internal/sql"
-	"context"
-	"errors"
-	"fmt"
-	"strings"
-	"time"
 
 	"github.com/alexedwards/argon2id"
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -30,7 +31,7 @@ type AuthService struct {
 	DB             *gorm.DB
 	JWTSecret      string
 	Providers      configuration.Providers
-	WebUrl         string
+	WebURL         string
 	Publisher      messaging.IPublisher
 	ActivityLogger activity.IActivityLogger
 }
@@ -42,9 +43,11 @@ func (s AuthService) Routes() chi.Router {
 	r.With(m.Validate[models.AuthRefreshBody]).Post("/refresh", handlers.CreateHandler(s.Refresh))
 
 	r.Route("/reset-password", func(r chi.Router) {
-		r.With(m.Validate[models.PasswordResetRequestBody]).Post("/", handlers.CreateHandler(s.RequestPasswordReset))
+		r.With(m.Validate[models.PasswordResetRequestBody]).
+			Post("/", handlers.CreateHandler(s.RequestPasswordReset))
 		r.Route("/{id0}", func(r chi.Router) {
-			r.With(m.Validate[models.PasswordResetValidateBody]).Post("/validate", handlers.CreateHandler(s.ValidatePasswordReset))
+			r.With(m.Validate[models.PasswordResetValidateBody]).
+				Post("/validate", handlers.CreateHandler(s.ValidatePasswordReset))
 		})
 	})
 
@@ -52,13 +55,18 @@ func (s AuthService) Routes() chi.Router {
 		r.Get("/", handlers.GetListHandler(s.GetProviderList))
 		r.Route("/{provider}", func(r chi.Router) {
 			r.Get("/begin", handlers.OpenIDBeginHandler(s.OpenIDBegin))
-			r.Get("/callback", handlers.OpenIDCallbackHandler(s.WebUrl, s.OpenIDCallback))
+			r.Get("/callback", handlers.OpenIDCallbackHandler(s.WebURL, s.OpenIDCallback))
 		})
 	})
 	return r
 }
 
-func (s AuthService) Login(logger *zap.Logger, _ models.UserClaims, _ uuid.UUIDs, body models.AuthLoginBody) (models.AuthLoginResponse, error) {
+func (s AuthService) Login(
+	logger *zap.Logger,
+	_ models.UserClaims,
+	_ uuid.UUIDs,
+	body models.AuthLoginBody,
+) (models.AuthLoginResponse, error) {
 	if _, ok := s.Providers[string(models.LocalProviderType)]; !ok {
 		logger.Debug("Local auth provider not activated in the configuration")
 		return models.AuthLoginResponse{}, customerr.NewAPIError(403, "FORBIDDEN")
@@ -69,7 +77,11 @@ func (s AuthService) Login(logger *zap.Logger, _ models.UserClaims, _ uuid.UUIDs
 		return models.AuthLoginResponse{}, customerr.NewAPIError(403, "FORBIDDEN")
 	}
 
-	searchUser := models.User{Email: body.Email, ProviderType: models.LocalProviderType, ProviderKey: string(models.LocalProviderType)}
+	searchUser := models.User{
+		Email:        body.Email,
+		ProviderType: models.LocalProviderType,
+		ProviderKey:  string(models.LocalProviderType),
+	}
 	result := s.DB.Where(searchUser, "email", "provider_type", "provider_key").Find(&searchUser)
 	if result.RowsAffected == 1 {
 		match, err := argon2id.ComparePasswordAndHash(body.Password, searchUser.HashedPassword)
@@ -77,14 +89,22 @@ func (s AuthService) Login(logger *zap.Logger, _ models.UserClaims, _ uuid.UUIDs
 			return models.AuthLoginResponse{}, errors.New("invalid email / password combination")
 		}
 
-		accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, string(models.LocalProviderType))
+		accessToken, err := h.NewAccessToken(
+			s.JWTSecret,
+			&searchUser,
+			string(models.LocalProviderType),
+		)
 		if err != nil {
-			return models.AuthLoginResponse{}, customerr.ErrorGenerateAccessTokenFailed
+			return models.AuthLoginResponse{}, customerr.ErrGenerateAccessTokenFailed
 		}
 
-		refreshToken, err := h.NewRefreshToken(s.JWTSecret, &searchUser, string(models.LocalProviderType))
+		refreshToken, err := h.NewRefreshToken(
+			s.JWTSecret,
+			&searchUser,
+			string(models.LocalProviderType),
+		)
 		if err != nil {
-			return models.AuthLoginResponse{}, customerr.ErrorGenerateRefreshTokenFailed
+			return models.AuthLoginResponse{}, customerr.ErrGenerateRefreshTokenFailed
 		}
 
 		return models.AuthLoginResponse{AccessToken: accessToken, RefreshToken: refreshToken}, nil
@@ -92,31 +112,47 @@ func (s AuthService) Login(logger *zap.Logger, _ models.UserClaims, _ uuid.UUIDs
 	return models.AuthLoginResponse{}, errors.New("invalid email / password combination")
 }
 
-func (s AuthService) Verify(_ *zap.Logger, _ models.UserClaims, _ uuid.UUIDs, body models.AuthVerifyBody) (any, error) {
+func (s AuthService) Verify(
+	_ *zap.Logger,
+	_ models.UserClaims,
+	_ uuid.UUIDs,
+	body models.AuthVerifyBody,
+) (any, error) {
 	data, err := h.ParseAccessToken(s.JWTSecret, body.AccessToken)
 	return data, err
 }
 
-func (s AuthService) Refresh(_ *zap.Logger, _ models.UserClaims, _ uuid.UUIDs, body models.AuthRefreshBody) (models.AuthRefreshResponse, error) {
+func (s AuthService) Refresh(
+	_ *zap.Logger,
+	_ models.UserClaims,
+	_ uuid.UUIDs,
+	body models.AuthRefreshBody,
+) (models.AuthRefreshResponse, error) {
 	refreshToken, err := h.ParseRefreshToken(s.JWTSecret, body.RefreshToken)
 	if err != nil {
 		return models.AuthRefreshResponse{}, err
 	}
 	accessToken, err := h.NewAccessToken(
-		s.JWTSecret, &models.User{ID: refreshToken.UserID, Email: refreshToken.Email, Role: refreshToken.Role}, refreshToken.Provider,
+		s.JWTSecret,
+		&models.User{ID: refreshToken.UserID, Email: refreshToken.Email, Role: refreshToken.Role},
+		refreshToken.Provider,
 	)
 	return models.AuthRefreshResponse{AccessToken: accessToken}, err
 }
 
-func (s AuthService) GetProviderList(_ *zap.Logger, _ models.UserClaims, _ uuid.UUIDs) []models.ProviderResponse {
-	var providers = make([]models.ProviderResponse, len(s.Providers))
+func (s AuthService) GetProviderList(
+	_ *zap.Logger,
+	_ models.UserClaims,
+	_ uuid.UUIDs,
+) []models.ProviderResponse {
+	providers := make([]models.ProviderResponse, len(s.Providers))
 	for id, provider := range s.Providers {
 		if len(provider.Domains) == 0 {
 			provider.Domains = []string{}
 		}
 
 		providers[provider.Order] = models.ProviderResponse{
-			Id:      id,
+			ID:      id,
 			Name:    provider.Name,
 			Type:    provider.Type,
 			Domains: provider.Domains,
@@ -128,7 +164,7 @@ func (s AuthService) GetProviderList(_ *zap.Logger, _ models.UserClaims, _ uuid.
 func (s AuthService) OpenIDBegin(providerName string, state string, nonce string) (string, error) {
 	provider, ok := s.Providers[providerName]
 	if !ok {
-		return "", fmt.Errorf("provider not found")
+		return "", errors.New("provider not found")
 	}
 
 	url := provider.OauthConfig.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.AccessTypeOffline)
@@ -140,7 +176,7 @@ func (s AuthService) OpenIDCallback(
 ) (string, string, error) {
 	provider, ok := s.Providers[providerKey]
 	if !ok {
-		return "", "", fmt.Errorf("provider not found")
+		return "", "", errors.New("provider not found")
 	}
 
 	oauth2Token, err := provider.OauthConfig.Exchange(ctx, code)
@@ -150,7 +186,7 @@ func (s AuthService) OpenIDCallback(
 
 	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
 	if !ok {
-		return "", "", fmt.Errorf("no id_token field in oauth2 token")
+		return "", "", errors.New("no id_token field in oauth2 token")
 	}
 
 	idToken, err := provider.Verifier.Verify(ctx, rawIDToken)
@@ -159,7 +195,7 @@ func (s AuthService) OpenIDCallback(
 	}
 
 	if idToken.Nonce != nonce {
-		return "", "", fmt.Errorf("nonce does not match")
+		return "", "", errors.New("nonce does not match")
 	}
 
 	userInfo, err := provider.Provider.UserInfo(ctx, oauth2.StaticTokenSource(oauth2Token))
@@ -172,12 +208,16 @@ func (s AuthService) OpenIDCallback(
 		return "", "", customerr.NewAPIError(403, "FORBIDDEN")
 	}
 
-	searchUser := models.User{Email: userInfo.Email, ProviderType: models.OIDCProviderType, ProviderKey: providerKey}
+	searchUser := models.User{
+		Email:        userInfo.Email,
+		ProviderType: models.OIDCProviderType,
+		ProviderKey:  providerKey,
+	}
 	result := s.DB.Where(searchUser, "email", "provider_type", "provider_key").Find(&searchUser)
 	if result.RowsAffected == 0 {
 		searchUser.Role = models.RoleUser
 
-		err := sql.CreateUserWithInvites(logger, s.DB, &searchUser)
+		err = sql.CreateUserWithInvites(logger, s.DB, &searchUser)
 		if err != nil {
 			return "", "", customerr.NewAPIError(500, "INTERNAL_SERVER_ERROR")
 		}
@@ -185,22 +225,29 @@ func (s AuthService) OpenIDCallback(
 
 	accessToken, err := h.NewAccessToken(s.JWTSecret, &searchUser, providerKey)
 	if err != nil {
-		return "", "", customerr.ErrorGenerateAccessTokenFailed
+		return "", "", customerr.ErrGenerateAccessTokenFailed
 	}
 
 	refreshToken, err := h.NewRefreshToken(s.JWTSecret, &searchUser, providerKey)
 	if err != nil {
-		return "", "", customerr.ErrorGenerateRefreshTokenFailed
+		return "", "", customerr.ErrGenerateRefreshTokenFailed
 	}
 
 	return accessToken, refreshToken, nil
 }
 
-func (s AuthService) ValidatePasswordReset(logger *zap.Logger, _ models.UserClaims, ids uuid.UUIDs, body models.PasswordResetValidateBody) (models.AuthLoginResponse, error) {
-	challengeId := ids[0]
+func (s AuthService) ValidatePasswordReset(
+	logger *zap.Logger,
+	_ models.UserClaims,
+	ids uuid.UUIDs,
+	body models.PasswordResetValidateBody,
+) (models.AuthLoginResponse, error) {
+	challengeID := ids[0]
 
 	var challenge models.Challenge
-	result := s.DB.Preload("User").Where("id = ? AND type = ?", challengeId, models.ChallengeTypePasswordReset).First(&challenge)
+	result := s.DB.Preload("User").
+		Where("id = ? AND type = ?", challengeID, models.ChallengeTypePasswordReset).
+		First(&challenge)
 
 	if result.RowsAffected == 0 {
 		return models.AuthLoginResponse{}, customerr.NewAPIError(404, "CHALLENGE_NOT_FOUND")
@@ -216,7 +263,10 @@ func (s AuthService) ValidatePasswordReset(logger *zap.Logger, _ models.UserClai
 		return models.AuthLoginResponse{}, customerr.NewAPIError(410, "CHALLENGE_EXPIRED")
 	}
 
-	match, err := argon2id.ComparePasswordAndHash(strings.ToUpper(body.Code), challenge.HashedSecret)
+	match, err := argon2id.ComparePasswordAndHash(
+		strings.ToUpper(body.Code),
+		challenge.HashedSecret,
+	)
 	if err != nil || !match {
 		challenge.AttemptsLeft--
 
@@ -242,50 +292,60 @@ func (s AuthService) ValidatePasswordReset(logger *zap.Logger, _ models.UserClai
 		return models.AuthLoginResponse{}, customerr.NewAPIError(500, "PASSWORD_UPDATE_FAILED")
 	}
 
-	tx := s.DB.Begin()
-	if tx.Error != nil {
-		logger.Error("Failed to start transaction", zap.Error(tx.Error))
-		return models.AuthLoginResponse{}, customerr.NewAPIError(500, "TRANSACTION_START_FAILED")
-	}
+	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		updateResult := tx.Model(challenge.User).Update("hashed_password", hashedPassword)
+		if updateResult.Error != nil {
+			logger.Error("Failed to update password", zap.Error(updateResult.Error))
+			tx.Rollback()
+			return customerr.NewAPIError(500, "PASSWORD_UPDATE_FAILED")
+		}
 
-	updateResult := tx.Model(challenge.User).Update("hashed_password", hashedPassword)
-	if updateResult.Error != nil {
-		logger.Error("Failed to update password", zap.Error(updateResult.Error))
-		tx.Rollback()
-		return models.AuthLoginResponse{}, customerr.NewAPIError(500, "PASSWORD_UPDATE_FAILED")
-	}
+		deleteResult := tx.Delete(&challenge)
+		if deleteResult.Error != nil {
+			logger.Error("Failed to delete challenge", zap.Error(deleteResult.Error))
+			tx.Rollback()
+			return customerr.NewAPIError(500, "CHALLENGE_CLEANUP_FAILED")
+		}
 
-	deleteResult := tx.Delete(&challenge)
-	if deleteResult.Error != nil {
-		logger.Error("Failed to delete challenge", zap.Error(deleteResult.Error))
-		tx.Rollback()
-		return models.AuthLoginResponse{}, customerr.NewAPIError(500, "CHALLENGE_CLEANUP_FAILED")
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		logger.Error("Failed to commit transaction", zap.Error(err))
-		return models.AuthLoginResponse{}, customerr.NewAPIError(500, "TRANSACTION_COMMIT_FAILED")
+		return nil
+	})
+	if err != nil {
+		return models.AuthLoginResponse{}, err
 	}
 
 	resetDate := time.Now().Format("January 2, 2006 at 3:04 PM MST")
 	successEvent := events.NewPasswordResetSuccess(
 		s.Publisher,
 		challenge.User.Email,
-		s.WebUrl,
+		s.WebURL,
 		resetDate,
 	)
 	successEvent.Trigger()
 
-	accessToken, err := h.NewAccessToken(s.JWTSecret, challenge.User, string(models.LocalProviderType))
+	accessToken, err := h.NewAccessToken(
+		s.JWTSecret,
+		challenge.User,
+		string(models.LocalProviderType),
+	)
 	if err != nil {
 		logger.Error("Failed to generate access token", zap.Error(err))
-		return models.AuthLoginResponse{}, customerr.NewAPIError(500, "GENERATE_ACCESS_TOKEN_FAILED")
+		return models.AuthLoginResponse{}, customerr.NewAPIError(
+			500,
+			"GENERATE_ACCESS_TOKEN_FAILED",
+		)
 	}
 
-	refreshToken, err := h.NewRefreshToken(s.JWTSecret, challenge.User, string(models.LocalProviderType))
+	refreshToken, err := h.NewRefreshToken(
+		s.JWTSecret,
+		challenge.User,
+		string(models.LocalProviderType),
+	)
 	if err != nil {
 		logger.Error("Failed to generate refresh token", zap.Error(err))
-		return models.AuthLoginResponse{}, customerr.NewAPIError(500, "GENERATE_REFRESH_TOKEN_FAILED")
+		return models.AuthLoginResponse{}, customerr.NewAPIError(
+			500,
+			"GENERATE_REFRESH_TOKEN_FAILED",
+		)
 	}
 
 	return models.AuthLoginResponse{
@@ -294,9 +354,15 @@ func (s AuthService) ValidatePasswordReset(logger *zap.Logger, _ models.UserClai
 	}, nil
 }
 
-func (s AuthService) RequestPasswordReset(_ *zap.Logger, _ models.UserClaims, _ uuid.UUIDs, body models.PasswordResetRequestBody) (interface{}, error) {
+func (s AuthService) RequestPasswordReset(
+	_ *zap.Logger,
+	_ models.UserClaims,
+	_ uuid.UUIDs,
+	body models.PasswordResetRequestBody,
+) (interface{}, error) {
 	var user models.User
-	result := s.DB.Where("email = ? AND provider_type = ?", body.Email, models.LocalProviderType).First(&user)
+	result := s.DB.Where("email = ? AND provider_type = ?", body.Email, models.LocalProviderType).
+		First(&user)
 
 	if result.RowsAffected == 0 {
 		return nil, nil
@@ -313,7 +379,8 @@ func (s AuthService) RequestPasswordReset(_ *zap.Logger, _ models.UserClaims, _ 
 	}
 
 	// Delete any existing password reset challenges for this user
-	s.DB.Where("user_id = ? AND type = ?", user.ID, models.ChallengeTypePasswordReset).Delete(&models.Challenge{})
+	s.DB.Where("user_id = ? AND type = ?", user.ID, models.ChallengeTypePasswordReset).
+		Delete(&models.Challenge{})
 
 	// Create a new password reset challenge with configurable expiration
 	expiresAt := time.Now().Add(configuration.SecurityChallengeExpirationMinutes * time.Minute)
@@ -336,7 +403,7 @@ func (s AuthService) RequestPasswordReset(_ *zap.Logger, _ models.UserClaims, _ 
 		secret,
 		user.Email,
 		challenge.ID.String(),
-		s.WebUrl,
+		s.WebURL,
 	)
 	event.Trigger()
 
