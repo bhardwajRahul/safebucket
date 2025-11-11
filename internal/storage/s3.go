@@ -333,6 +333,7 @@ func (s S3Storage) processExistingLifecycleRules(
 				zap.L().Debug("Trash lifecycle policy already up-to-date",
 					zap.String("bucket", s.BucketName),
 					zap.Int("retentionDays", retentionDays))
+				newRules = append(newRules, rule)
 			}
 
 		case multipartRuleID:
@@ -355,6 +356,14 @@ func (s S3Storage) processExistingLifecycleRules(
 	return config
 }
 
+// EnsureTrashLifecyclePolicy configures lifecycle policies for the bucket, merging with existing rules.
+// It adds or updates the trash expiration rule (prefix: trash/) with the specified retention period.
+//
+// NOTE: AbortIncompleteMultipartUpload is not supported by MinIO.
+// MinIO does not fully support the AbortIncompleteMultipartUpload lifecycle action.
+// References:
+// - https://github.com/minio/minio/issues/16120
+// - https://github.com/minio/minio/issues/19115
 func (s S3Storage) EnsureTrashLifecyclePolicy(retentionDays int) error {
 	const trashRuleID = "safebucket-trash-retention"
 	const multipartRuleID = "safebucket-abort-incomplete-multipart"
@@ -368,8 +377,11 @@ func (s S3Storage) EnsureTrashLifecyclePolicy(retentionDays int) error {
 	}
 
 	ctx := context.Background()
+
+	// Fetch existing lifecycle configuration
 	existingConfig, err := s.storage.GetBucketLifecycle(ctx, s.BucketName)
 
+	// Process existing rules to preserve non-SafeBucket policies
 	config := s.processExistingLifecycleRules(
 		existingConfig,
 		err,
@@ -378,8 +390,17 @@ func (s S3Storage) EnsureTrashLifecyclePolicy(retentionDays int) error {
 		retentionDays,
 	)
 
-	// Add trash expiration rule
-	{
+	// Check if trash rule already exists and is up-to-date
+	trashRuleExists := false
+	for _, rule := range config.Rules {
+		if rule.ID == trashRuleID {
+			trashRuleExists = true
+			break
+		}
+	}
+
+	// Add or update trash rule if needed
+	if !trashRuleExists {
 		trashRule := lifecycle.Rule{
 			ID:     trashRuleID,
 			Status: "Enabled",
@@ -391,18 +412,6 @@ func (s S3Storage) EnsureTrashLifecyclePolicy(retentionDays int) error {
 			},
 		}
 		config.Rules = append(config.Rules, trashRule)
-	}
-
-	// Add incomplete multipart upload cleanup rule
-	{
-		multipartRule := lifecycle.Rule{
-			ID:     multipartRuleID,
-			Status: "Enabled",
-			AbortIncompleteMultipartUpload: lifecycle.AbortIncompleteMultipartUpload{
-				DaysAfterInitiation: 1,
-			},
-		}
-		config.Rules = append(config.Rules, multipartRule)
 	}
 
 	err = s.storage.SetBucketLifecycle(ctx, s.BucketName, config)
