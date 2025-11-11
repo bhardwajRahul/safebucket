@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	c "api/internal/configuration"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/minio/minio-go/v7/pkg/lifecycle"
 	"github.com/minio/minio-go/v7/pkg/tags"
 	"go.uber.org/zap"
 )
@@ -79,8 +83,12 @@ func (s S3Storage) replaceEndpoint(urlString string) string {
 	return presignedURL.String()
 }
 
+func (s S3Storage) GetBucketName() string {
+	return s.BucketName
+}
+
 func (s S3Storage) PresignedGetObject(path string) (string, error) {
-	url, err := s.storage.PresignedGetObject(
+	presignedURL, err := s.storage.PresignedGetObject(
 		context.Background(),
 		s.BucketName,
 		path,
@@ -92,7 +100,7 @@ func (s S3Storage) PresignedGetObject(path string) (string, error) {
 	}
 
 	// Replace internal endpoint with external endpoint for browser access
-	urlString := s.replaceEndpoint(url.String())
+	urlString := s.replaceEndpoint(presignedURL.String())
 	return urlString, nil
 }
 
@@ -110,13 +118,13 @@ func (s S3Storage) PresignedPostPolicy(
 	_ = policy.SetUserMetadata("File-Id", metadata["file_id"])
 	_ = policy.SetUserMetadata("User-Id", metadata["user_id"])
 
-	url, metadata, err := s.storage.PresignedPostPolicy(context.Background(), policy)
+	presignedURL, metadata, err := s.storage.PresignedPostPolicy(context.Background(), policy)
 	if err != nil {
 		return "", map[string]string{}, err
 	}
 
 	// Replace internal endpoint with external endpoint for browser access
-	urlString := s.replaceEndpoint(url.String())
+	urlString := s.replaceEndpoint(presignedURL.String())
 	return urlString, metadata, nil
 }
 
@@ -249,4 +257,166 @@ func (s S3Storage) RemoveObjectTags(path string, tagsToRemove []string) error {
 		minio.PutObjectTaggingOptions{},
 	)
 	return err
+}
+
+// IsTrashMarkerPath checks if a deletion event is for a trash marker.
+// Pattern: trash/{bucket-id}/{rest} -> buckets/{bucket-id}/{rest}.
+func (s S3Storage) IsTrashMarkerPath(path string) (bool, string) {
+	if strings.HasPrefix(path, trashPrefix) {
+		originalPath := bucketsPrefix + strings.TrimPrefix(path, trashPrefix)
+		return true, originalPath
+	}
+
+	return false, ""
+}
+
+// getTrashMarkerPath converts buckets/{id}/path to trash/{id}/path.
+func (s S3Storage) getTrashMarkerPath(objectPath string) string {
+	return strings.Replace(objectPath, bucketsPrefix, trashPrefix, 1)
+}
+
+func (s S3Storage) MarkFileAsTrashed(objectPath string, metadata models.TrashMetadata) error {
+	ctx := context.Background()
+	markerPath := s.getTrashMarkerPath(objectPath)
+
+	// Only verify object exists for files (not folders, which only exist in database)
+	if !metadata.IsFolder {
+		_, err := s.storage.StatObject(ctx, s.BucketName, objectPath, minio.StatObjectOptions{})
+		if err != nil {
+			return fmt.Errorf("object does not exist and can't be trashed: %w", err)
+		}
+	}
+
+	// Create empty marker object to trigger lifecycle policy deletion
+	reader := bytes.NewReader([]byte{})
+	_, err := s.storage.PutObject(ctx, s.BucketName, markerPath, reader, 0, minio.PutObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to create marker: %w", err)
+	}
+
+	return nil
+}
+
+func (s S3Storage) UnmarkFileAsTrashed(objectPath string) error {
+	ctx := context.Background()
+	markerPath := s.getTrashMarkerPath(objectPath)
+	err := s.storage.RemoveObject(ctx, s.BucketName, markerPath, minio.RemoveObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to remove marker: %w", err)
+	}
+	return nil
+}
+
+// processExistingLifecycleRules processes existing lifecycle rules and returns the updated configuration.
+func (s S3Storage) processExistingLifecycleRules(
+	existingConfig *lifecycle.Configuration,
+	err error,
+	trashRuleID, multipartRuleID string,
+	retentionDays int,
+) *lifecycle.Configuration {
+	if err != nil || existingConfig == nil || existingConfig.Empty() {
+		return lifecycle.NewConfiguration()
+	}
+
+	config := existingConfig
+	var newRules []lifecycle.Rule
+	trashRuleFound := false
+	multipartRuleFound := false
+
+	for _, rule := range config.Rules {
+		switch rule.ID {
+		case trashRuleID:
+			trashRuleFound = true
+			if !rule.Expiration.IsDaysNull() &&
+				int(rule.Expiration.Days) == retentionDays &&
+				rule.RuleFilter.Prefix == "trash/" {
+				zap.L().Debug("Trash lifecycle policy already up-to-date",
+					zap.String("bucket", s.BucketName),
+					zap.Int("retentionDays", retentionDays))
+			}
+
+		case multipartRuleID:
+			multipartRuleFound = true
+			if rule.AbortIncompleteMultipartUpload.DaysAfterInitiation == 1 {
+				zap.L().Debug("Multipart upload cleanup policy already up-to-date",
+					zap.String("bucket", s.BucketName))
+				newRules = append(newRules, rule)
+			}
+
+		default:
+			newRules = append(newRules, rule)
+		}
+	}
+
+	if trashRuleFound || multipartRuleFound {
+		config.Rules = newRules
+	}
+
+	return config
+}
+
+func (s S3Storage) EnsureTrashLifecyclePolicy(retentionDays int) error {
+	const trashRuleID = "safebucket-trash-retention"
+	const multipartRuleID = "safebucket-abort-incomplete-multipart"
+
+	// Validate retentionDays to prevent overflow and invalid values
+	if retentionDays < 0 {
+		return fmt.Errorf("retentionDays %d cannot be negative", retentionDays)
+	}
+	if retentionDays > 2147483647 { // math.MaxInt32
+		return fmt.Errorf("retentionDays %d exceeds maximum allowed value (2147483647)", retentionDays)
+	}
+
+	ctx := context.Background()
+	existingConfig, err := s.storage.GetBucketLifecycle(ctx, s.BucketName)
+
+	config := s.processExistingLifecycleRules(
+		existingConfig,
+		err,
+		trashRuleID,
+		multipartRuleID,
+		retentionDays,
+	)
+
+	// Add trash expiration rule
+	{
+		trashRule := lifecycle.Rule{
+			ID:     trashRuleID,
+			Status: "Enabled",
+			RuleFilter: lifecycle.Filter{
+				Prefix: "trash/",
+			},
+			Expiration: lifecycle.Expiration{
+				Days: lifecycle.ExpirationDays(retentionDays),
+			},
+		}
+		config.Rules = append(config.Rules, trashRule)
+	}
+
+	// Add incomplete multipart upload cleanup rule
+	{
+		multipartRule := lifecycle.Rule{
+			ID:     multipartRuleID,
+			Status: "Enabled",
+			AbortIncompleteMultipartUpload: lifecycle.AbortIncompleteMultipartUpload{
+				DaysAfterInitiation: 1,
+			},
+		}
+		config.Rules = append(config.Rules, multipartRule)
+	}
+
+	err = s.storage.SetBucketLifecycle(ctx, s.BucketName, config)
+	if err != nil {
+		zap.L().Error("Failed to set lifecycle policies",
+			zap.String("bucket", s.BucketName),
+			zap.Int("trashRetentionDays", retentionDays),
+			zap.Error(err))
+		return err
+	}
+
+	zap.L().Info("Lifecycle policies configured",
+		zap.String("bucket", s.BucketName),
+		zap.Int("trashRetentionDays", retentionDays),
+		zap.Int("multipartCleanupDays", 1))
+	return nil
 }

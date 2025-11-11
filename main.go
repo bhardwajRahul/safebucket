@@ -30,7 +30,7 @@ func main() {
 	core.NewLogger(config.App.LogLevel)
 	db := database.InitDB(config.Database)
 	cache := core.NewCache(config.Cache)
-	storage := core.NewStorage(config.Storage)
+	storage := core.NewStorage(config.Storage, config.App.TrashRetentionDays)
 	notifier := core.NewNotifier(config.Notifier)
 	activity := core.NewActivityLogger(config.Activity)
 
@@ -64,7 +64,7 @@ func main() {
 		TrashRetentionDays: config.App.TrashRetentionDays,
 	}
 
-	eventsManager := core.NewEventsManager(config.Events)
+	eventsManager := core.NewEventsManager(config.Events, storage)
 	eventRouter := core.NewEventRouter(eventsManager)
 
 	notifications := eventsManager.GetSubscriber(configuration.EventsNotifications).Subscribe()
@@ -75,10 +75,12 @@ func main() {
 
 	bucketEventsSubscriber := eventsManager.GetSubscriber(configuration.EventsBucketEvents)
 	bucketEvents := bucketEventsSubscriber.Subscribe()
+
 	go events.HandleBucketEvents(
 		bucketEventsSubscriber,
 		db,
 		activity,
+		storage,
 		config.App.TrashRetentionDays,
 		bucketEvents,
 	)

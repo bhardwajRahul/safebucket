@@ -44,6 +44,9 @@ COPY --from=frontend-builder --chown=nonroot:nonroot /app/web/dist ./web/dist
 # Copy database migrations
 COPY --from=backend-builder --chown=nonroot:nonroot /app/internal/database/migrations ./internal/database/migrations
 
+# Copy mail templates
+COPY --from=backend-builder --chown=nonroot:nonroot /app/internal/mails ./internal/mails
+
 # Expose port
 EXPOSE 8080
 

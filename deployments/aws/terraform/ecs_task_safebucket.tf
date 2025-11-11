@@ -8,6 +8,12 @@ resource "aws_ecs_task_definition" "safebucket" {
   execution_role_arn       = aws_iam_role.ecs_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
 
+  # Runtime platform for CPU architecture (ARM64 for better price/performance)
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = var.safebucket_architecture
+  }
+
   container_definitions = jsonencode([
     {
       name      = "safebucket"
@@ -35,6 +41,14 @@ resource "aws_ecs_task_definition" "safebucket" {
           value = "8080"
         },
         {
+          name  = "APP__LOG_LEVEL"
+          value = "info"
+        },
+        {
+          name  = "APP__TRASH_RETENTION_DAYS"
+          value = "7"
+        },
+        {
           name  = "APP__STATIC_FILES__ENABLED"
           value = "true"
         },
@@ -48,7 +62,7 @@ resource "aws_ecs_task_definition" "safebucket" {
         },
         {
           name  = "APP__ALLOWED_ORIGINS"
-          value = "http://${aws_lb.safebucket_alb.dns_name}"
+          value = join(",", local.cors_allowed_origins)
         },
         {
           name  = "APP__TRUSTED_PROXIES"
@@ -99,20 +113,24 @@ resource "aws_ecs_task_definition" "safebucket" {
           value = aws_s3_bucket.main.bucket
         },
         {
-          name  = "STORAGE__AWS__SQS_NAME"
-          value = aws_sqs_queue.s3_events.name
+          name  = "STORAGE__AWS__EXTERNAL_ENDPOINT"
+          value = local.s3_external_endpoint
         },
         {
           name  = "EVENTS__TYPE"
           value = "aws"
         },
         {
-          name  = "EVENTS__AWS__SQS_NAME"
+          name  = "EVENTS__QUEUES__NOTIFICATIONS__NAME"
+          value = aws_sqs_queue.notifications.name
+        },
+        {
+          name = "EVENTS__QUEUES__BUCKET_EVENTS__NAME"
           value = aws_sqs_queue.s3_events.name
         },
         {
-          name  = "EVENTS__AWS__BUCKET_NAME"
-          value = aws_s3_bucket.main.bucket
+          name = "EVENTS__QUEUES__OBJECT_DELETION__NAME"
+          value = aws_sqs_queue.object_deletion.name
         },
         {
           name  = "AWS_REGION"
@@ -124,7 +142,7 @@ resource "aws_ecs_task_definition" "safebucket" {
         },
         {
           name  = "NOTIFIER__SMTP__HOST"
-          value = aws_lb.internal_alb.dns_name
+          value = "mailpit.${aws_service_discovery_private_dns_namespace.internal.name}"
         },
         {
           name  = "NOTIFIER__SMTP__PORT"
@@ -155,8 +173,12 @@ resource "aws_ecs_task_definition" "safebucket" {
           value = "loki"
         },
         {
+          name  = "ACTIVITY__LEVEL"
+          value = "info"
+        },
+        {
           name  = "ACTIVITY__LOKI__ENDPOINT"
-          value = "http://${aws_lb.internal_alb.dns_name}:3100"
+          value = "http://loki.${aws_service_discovery_private_dns_namespace.internal.name}:3100"
         },
         {
           name  = "AUTH__PROVIDERS__KEYS"
@@ -169,6 +191,10 @@ resource "aws_ecs_task_definition" "safebucket" {
         {
           name  = "AUTH__PROVIDERS__LOCAL__TYPE"
           value = "local"
+        },
+        {
+          name  = "AUTH__PROVIDERS__LOCAL__SHARING__ALLOWED"
+          value = "true"
         }
       ]
 

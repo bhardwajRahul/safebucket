@@ -1,16 +1,40 @@
 # SafeBucket ECS Service
 resource "aws_ecs_service" "safebucket" {
-  name                              = "${var.project_name}-${var.environment}-safebucket"
-  cluster                          = aws_ecs_cluster.safebucket_cluster.id
-  task_definition                  = aws_ecs_task_definition.safebucket.arn
-  desired_count                    = var.safebucket_desired_count
+  name                   = "${var.project_name}-${var.environment}-safebucket"
+  cluster                = aws_ecs_cluster.safebucket_cluster.id
+  task_definition        = aws_ecs_task_definition.safebucket.arn
+  desired_count          = var.safebucket_desired_count
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
-  enable_execute_command            = var.enable_ecs_exec
+  enable_execute_command = var.enable_ecs_exec
 
-  capacity_provider_strategy {
-    capacity_provider = "FARGATE"
-    weight           = 100
+  # Capacity provider strategy - supports Spot instances for cost savings
+  dynamic "capacity_provider_strategy" {
+    for_each = var.enable_spot_instances ? [1] : []
+    content {
+      capacity_provider = "FARGATE_SPOT"
+      weight            = var.spot_instance_percentage
+      base              = 0
+    }
+  }
+
+  dynamic "capacity_provider_strategy" {
+    for_each = var.enable_spot_instances && var.spot_instance_percentage < 100 ? [1] : []
+    content {
+      capacity_provider = "FARGATE"
+      weight            = 100 - var.spot_instance_percentage
+      base              = 0
+    }
+  }
+
+  # Default to FARGATE if spot instances are disabled
+  dynamic "capacity_provider_strategy" {
+    for_each = var.enable_spot_instances ? [] : [1]
+    content {
+      capacity_provider = "FARGATE"
+      weight            = 100
+      base              = 1
+    }
   }
 
   network_configuration {
@@ -36,6 +60,12 @@ resource "aws_ecs_service" "safebucket" {
   deployment_circuit_breaker {
     enable   = false
     rollback = false
+  }
+
+  # Trigger redeployment when needed
+  # Change the redeployment_trigger variable value to force update
+  triggers = {
+    redeployment = var.redeployment_trigger
   }
 
   tags = {

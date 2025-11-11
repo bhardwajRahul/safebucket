@@ -98,7 +98,8 @@ type CloudStorage struct {
 }
 
 type S3Configuration struct {
-	BucketName string `mapstructure:"bucket_name" validate:"required"`
+	BucketName       string `mapstructure:"bucket_name"       validate:"required"`
+	ExternalEndpoint string `mapstructure:"external_endpoint"`
 }
 
 // GetExternalURL returns the external URL for the configured storage provider.
@@ -113,6 +114,9 @@ func (s *StorageConfiguration) GetExternalURL() string {
 	case "gcp":
 		return ""
 	case "aws":
+		if s.S3 != nil && s.S3.ExternalEndpoint != "" {
+			return s.S3.ExternalEndpoint
+		}
 		return ""
 	}
 	return ""
