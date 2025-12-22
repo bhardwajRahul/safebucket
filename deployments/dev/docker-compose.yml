@@ -3,88 +3,63 @@ name: safebucket
 services:
   bucket:
     container_name: bucket
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    image: rustfs/rustfs:1.0.0-alpha.76
     environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
-    command: server /data --console-address ":9001"
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY}
+      - RUSTFS_NOTIFY_MQTT_ENABLE_PRIMARY=${RUSTFS_NOTIFY_MQTT_ENABLE_PRIMARY}
+      - RUSTFS_NOTIFY_MQTT_BROKER_PRIMARY=${RUSTFS_NOTIFY_MQTT_BROKER_PRIMARY}
+      - RUSTFS_NOTIFY_MQTT_TOPIC_PRIMARY=${RUSTFS_NOTIFY_MQTT_TOPIC_PRIMARY}
+      - RUSTFS_NOTIFY_MQTT_QOS_PRIMARY=${RUSTFS_NOTIFY_MQTT_QOS_PRIMARY}
+      - RUSTFS_NOTIFY_MQTT_QUEUE_DIR_PRIMARY=${RUSTFS_NOTIFY_MQTT_QUEUE_DIR_PRIMARY}
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - "minio_data:/data"
+      - "rustfs_data:/data"
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      test: [ "CMD", "sh", "-c", "curl -f http://localhost:9000/health && curl -f http://localhost:9001/rustfs/console/health" ]
       interval: 30s
-      timeout: 20s
+      timeout: 10s
       retries: 3
     restart: unless-stopped
     depends_on:
       - nats
 
-  minio-events-config:
-    container_name: minio-events-config
+  bucket-events-config:
+    container_name: bucket-events-config
     image: minio/mc:latest
     environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY}
     entrypoint: [ "/bin/sh", "-c" ]
     command:
       - |
-        echo "Configuring MinIO bucket events for NATS JetStream..."
+        echo "Configuring RustFS buckets and events..."
 
-        # Wait for MinIO to be ready using mc ping
-        echo "Waiting for MinIO to be ready..."
-        while ! mc alias set local http://bucket:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} 2>/dev/null; do
-          echo "MinIO not ready yet, waiting..."
+        # Wait for RustFS to be ready
+        echo "Waiting for RustFS to be ready..."
+        while ! mc alias set local http://bucket:9000 $${RUSTFS_ACCESS_KEY} $${RUSTFS_SECRET_KEY} 2>/dev/null; do
+          echo "RustFS not ready yet, waiting..."
           sleep 2
         done
 
-        echo "MinIO is ready. Creating required buckets..."
+        echo "RustFS is ready. Creating required buckets..."
         mc mb local/safebucket --ignore-existing
         mc mb local/loki-data --ignore-existing
         mc mb local/loki-ruler --ignore-existing
         echo "Buckets created successfully."
 
-        echo "Configuring NATS notification target..."
-
-        mc admin config set local notify_nats:safebucket \
-          address="nats:4222" \
-          subject="safebucket-bucket-events" \
-          jetstream="off" \
-          tls="off" \
-          tls_skip_verify="off"
-
-        # Restart MinIO to apply config
-        echo "Restarting MinIO to apply configuration..."
-        mc admin service restart local --json
-
-        echo "Waiting for MinIO to restart..."
-        sleep 15
-
-        # Wait for MinIO to be ready again using mc ping
-        while ! mc admin info local 2>/dev/null; do
-          echo "Waiting for MinIO to be ready after restart..."
-          sleep 3
-        done
-
-        echo "MinIO is ready after restart. Verifying NATS target configuration..."
-
-        # List notification targets to verify the NATS target was created
-        echo "Available notification targets:"
-        mc admin config get local notify_nats
-
-        echo "Removing any existing bucket notification events..."
-        mc event remove local/safebucket arn:minio:sqs::safebucket:nats --event put,delete,get 2>/dev/null || true
-
-        echo "Adding bucket notification events..."
-        mc event add local/safebucket arn:minio:sqs::safebucket:nats --event put,delete,get
+        echo "Adding bucket notification events for MQTT target..."
+        # The MQTT target 'primary' is configured via RUSTFS_NOTIFY_MQTT_* env vars
+        mc event remove local/safebucket arn:rustfs:sqs:us-east-1:primary:mqtt --event put,delete,get 2>/dev/null || true
+        mc event add local/safebucket arn:rustfs:sqs:us-east-1:primary:mqtt --event put,delete,get
 
         echo "Verifying bucket notification configuration:"
         mc event list local/safebucket
 
-        echo "MinIO bucket events configured successfully!"
-        echo "Events will be published to NATS subject: safebucket.bucket-events"
+        echo "RustFS bucket events configured successfully!"
+        echo "Events will be published to MQTT topic: safebucket-bucket-events"
     depends_on:
       bucket:
         condition: service_healthy
@@ -142,15 +117,18 @@ services:
     image: nats:2.12-alpine
     container_name: nats
     ports:
-      - "4222:4222"
+      - "4222:4222"   # NATS protocol
+      - "1883:1883"   # MQTT protocol
+      - "8222:8222"   # HTTP monitoring
     restart: unless-stopped
-    command: [ "-js", "-sd", "/data" ]
+    command: [ "-c", "/etc/nats/nats.conf" ]
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
     volumes:
       - "nats_data:/data"
+      - ./config/nats.conf:/etc/nats/nats.conf
 
   loki:
     container_name: loki
@@ -162,8 +140,6 @@ services:
       - "9095:9095"
     volumes:
       - ./config/loki.yaml:/etc/loki/config.yaml
-    depends_on:
-      - bucket
     healthcheck:
       test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1" ]
       interval: 10s
@@ -205,7 +181,7 @@ services:
       retries: 5
 
 volumes:
-  minio_data:
+  rustfs_data:
   postgresql_data:
   mail_data:
   valkey_data:
