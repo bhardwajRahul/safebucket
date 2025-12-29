@@ -1,5 +1,4 @@
 import { useState } from "react";
-import type { ColumnDef, SortingState } from "@tanstack/react-table";
 import {
   flexRender,
   getCoreRowModel,
@@ -9,7 +8,9 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { useTranslation } from "react-i18next";
-import type { IActivity } from "@/types/activity";
+import { BucketRowActions } from "./BucketRowActions";
+import type { ColumnDef, SortingState } from "@tanstack/react-table";
+import type { IAdminBucket } from "@/queries/admin";
 import {
   Table,
   TableBody,
@@ -19,12 +20,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-interface AdminActivityTableProps {
-  columns: Array<ColumnDef<IActivity>>;
-  data: Array<IActivity>;
+interface AdminBucketsTableProps {
+  columns: Array<ColumnDef<IAdminBucket>>;
+  data: Array<IAdminBucket>;
+  onDeleteBucket: (bucket: IAdminBucket) => void;
 }
 
-export function AdminActivityTable({ columns, data }: AdminActivityTableProps) {
+export function AdminBucketsTable({
+  columns,
+  data,
+  onDeleteBucket,
+}: AdminBucketsTableProps) {
   const { t } = useTranslation();
   const [sorting, setSorting] = useState<SortingState>([]);
 
@@ -55,6 +61,9 @@ export function AdminActivityTable({ columns, data }: AdminActivityTableProps) {
                       )}
                 </TableHead>
               ))}
+              <TableHead className="w-[50px]">
+                {t("admin.buckets.columns.actions")}
+              </TableHead>
             </TableRow>
           ))}
         </TableHeader>
@@ -67,12 +76,21 @@ export function AdminActivityTable({ columns, data }: AdminActivityTableProps) {
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </TableCell>
                 ))}
+                <TableCell>
+                  <BucketRowActions
+                    bucket={row.original}
+                    onDelete={onDeleteBucket}
+                  />
+                </TableCell>
               </TableRow>
             ))
           ) : (
             <TableRow>
-              <TableCell colSpan={columns.length} className="h-24 text-center">
-                {t("admin.activity.no_activity")}
+              <TableCell
+                colSpan={columns.length + 1}
+                className="h-24 text-center"
+              >
+                {t("admin.buckets.no_buckets")}
               </TableCell>
             </TableRow>
           )}
