@@ -113,6 +113,7 @@
     "profile": "Profile",
     "preferences": "Preferences",
     "administration": "Administration",
+    "dashboard": "Dashboard",
     "users": "Users"
   },
   "activity": {
@@ -348,6 +349,30 @@
     }
   },
   "admin": {
+    "dashboard": {
+      "stats": {
+        "users": "Total Users",
+        "buckets": "Total Buckets",
+        "files": "Total Files",
+        "storage": "Total Storage"
+      },
+      "shared_files_chart": {
+        "title": "Shared Files",
+        "description": "Files uploaded to buckets over time",
+        "6_months": "Last 6 months",
+        "3_months": "Last 3 months",
+        "1_month": "Last month"
+      },
+      "roles": {
+        "admin": "Admin",
+        "user": "User",
+        "guest": "Guest"
+      },
+      "providers": {
+        "local": "Local",
+        "oidc": "SSO (OIDC)"
+      }
+    },
     "users": {
       "title": "User Management",
       "description": "Manage all users in the system",
