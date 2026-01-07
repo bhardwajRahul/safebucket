@@ -9,6 +9,9 @@ app:
     - http://localhost:4173
   port: 8080
   jwt_secret: 6n5o+dFncio8gQA4jt7pUJrJz92WrqD25zXAa8ashxA
+  access_token_expiry: 60
+  refresh_token_expiry: 600
+  mfa_token_expiry: 5
   trusted_proxies:
     - 127.0.0.1
     - ::1
@@ -17,7 +20,9 @@ app:
     directory: "web/dist"
   admin_email: admin@safebucket.io
   admin_password: ChangeMePlease
-  trash_retention_days: 7  # Files in trash will be automatically deleted after this many days
+  trash_retention_days: 7
+  mfa_encryption_key: "ChangeMe32CharacterKeyForAES256!"
+  mfa_required: true
 
 database:
   host: localhost
@@ -28,7 +33,7 @@ database:
   sslmode: disable
 
 cache:
-  type: redis # or valkey
+  type: redis
   redis:
     hosts:
       - localhost:6379

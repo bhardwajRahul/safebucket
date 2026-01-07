@@ -29,6 +29,40 @@ type User struct {
 	CreatedAt      time.Time      `                                                                json:"created_at"`
 	UpdatedAt      time.Time      `                                                                json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `gorm:"index"                                                    json:"-"`
+
+	// MFADevices is the list of MFA devices associated with this user.
+	MFADevices []MFADevice `gorm:"foreignKey:UserID" json:"-"`
+}
+
+// HasMFAEnabled returns true if user has at least one verified MFA device.
+func (u *User) HasMFAEnabled() bool {
+	for _, d := range u.MFADevices {
+		if d.IsVerified {
+			return true
+		}
+	}
+	return false
+}
+
+// GetVerifiedDevices returns only verified MFA devices.
+func (u *User) GetVerifiedDevices() []MFADevice {
+	var verified []MFADevice
+	for _, d := range u.MFADevices {
+		if d.IsVerified {
+			verified = append(verified, d)
+		}
+	}
+	return verified
+}
+
+// GetDefaultDevice returns the default MFA device if it exists.
+func (u *User) GetDefaultDevice() *MFADevice {
+	for i := range u.MFADevices {
+		if u.MFADevices[i].IsDefault && u.MFADevices[i].IsVerified {
+			return &u.MFADevices[i]
+		}
+	}
+	return nil
 }
 
 type UserActivity struct {

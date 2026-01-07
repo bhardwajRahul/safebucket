@@ -9,6 +9,7 @@ import type { SubmitHandler } from "react-hook-form";
 import { useForm } from "react-hook-form";
 import type { ILoginForm } from "@/components/auth-view/types/session";
 import { useLogin } from "@/hooks/useAuth";
+import { useMFAAuth } from "@/context/MFAAuthContext";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -43,6 +44,7 @@ function Login() {
   const providers = providersQuery.data;
 
   const { loginOAuth, loginLocal } = useLogin();
+  const { setMFAAuth } = useMFAAuth();
   const { register, handleSubmit, watch } = useForm<ILoginForm>();
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +74,20 @@ function Login() {
 
     const result = await loginLocal(data);
 
-    if (result.success) {
+    if (result.mfaRequired && result.mfaToken && result.userId) {
+      // Store MFA token, user ID, and devices in memory context
+      setMFAAuth(result.mfaToken, result.userId, result.devices || []);
+      // Redirect to MFA verification
+      navigate({
+        to: "/auth/mfa",
+        search: { redirect },
+      });
+    } else if (result.mfaSetupRequired && result.mfaToken && result.userId) {
+      // Store MFA token and user ID in memory context (used to skip password during setup)
+      setMFAAuth(result.mfaToken, result.userId, []);
+      // Redirect to MFA setup (admin requires MFA but not set up)
+      navigate({ to: "/auth/mfa/setup-required", search: { redirect } });
+    } else if (result.success) {
       // Navigate to redirect or home
       navigate({ to: redirect || "/" });
     } else {

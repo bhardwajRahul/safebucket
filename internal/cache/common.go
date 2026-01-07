@@ -109,3 +109,62 @@ func (r *RueidisCache) Close() error {
 	r.client.Close()
 	return nil
 }
+
+func (r *RueidisCache) IsTOTPCodeUsed(deviceID string, code string) (bool, error) {
+	ctx := context.Background()
+	key := fmt.Sprintf(configuration.CacheTOTPUsedKey, deviceID, code)
+
+	result, err := r.client.Do(ctx, r.client.B().Exists().Key(key).Build()).AsInt64()
+	if err != nil {
+		return false, err
+	}
+	return result > 0, nil
+}
+
+func (r *RueidisCache) MarkTOTPCodeUsed(deviceID string, code string) error {
+	ctx := context.Background()
+	key := fmt.Sprintf(configuration.CacheTOTPUsedKey, deviceID, code)
+
+	err := r.client.Do(
+		ctx,
+		r.client.B().Setex().Key(key).Seconds(int64(configuration.TOTPCodeTTL)).Value("1").Build(),
+	).Error()
+	return err
+}
+
+func (r *RueidisCache) GetMFAAttempts(userID string) (int, error) {
+	ctx := context.Background()
+	key := fmt.Sprintf(configuration.CacheMFAAttemptsKey, userID)
+
+	count, err := r.client.Do(ctx, r.client.B().Get().Key(key).Build()).AsInt64()
+	if err != nil {
+		if rueidis.IsRedisNil(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return int(count), nil
+}
+
+func (r *RueidisCache) IncrementMFAAttempts(userID string) error {
+	ctx := context.Background()
+	key := fmt.Sprintf(configuration.CacheMFAAttemptsKey, userID)
+
+	_, err := r.client.Do(ctx, r.client.B().Incr().Key(key).Build()).AsInt64()
+	if err != nil {
+		return err
+	}
+
+	err = r.client.Do(
+		ctx,
+		r.client.B().Expire().Key(key).Seconds(int64(configuration.MFALockoutSeconds)).Build(),
+	).Error()
+	return err
+}
+
+func (r *RueidisCache) ResetMFAAttempts(userID string) error {
+	ctx := context.Background()
+	key := fmt.Sprintf(configuration.CacheMFAAttemptsKey, userID)
+
+	return r.client.Do(ctx, r.client.B().Del().Key(key).Build()).Error()
+}

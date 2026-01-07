@@ -19,7 +19,7 @@ type (
 	GetOneTargetFunc[Out any]                 func(*zap.Logger, models.UserClaims, uuid.UUIDs) (Out, error)
 	GetOneWithQueryTargetFunc[Q any, Out any] func(*zap.Logger, models.UserClaims, uuid.UUIDs, Q) (Out, error)
 	GetOneListTargetFunc[Out any]             func(*zap.Logger, models.UserClaims, uuid.UUIDs) []Out
-	UpdateTargetFunc[In any]                  func(*zap.Logger, models.UserClaims, uuid.UUIDs, In) error
+	BodyTargetFunc[In any]                    func(*zap.Logger, models.UserClaims, uuid.UUIDs, In) error
 	DeleteTargetFunc                          func(*zap.Logger, models.UserClaims, uuid.UUIDs) error
 )
 
@@ -56,7 +56,7 @@ func GetListHandler[Out any](getList ListTargetFunc[Out]) http.HandlerFunc {
 			return
 		}
 
-		claims, _ := h.GetUserClaims(r.Context()) // todo: check error
+		claims, _ := h.GetUserClaims(r.Context())
 		logger := m.GetLogger(r)
 		records := getList(logger, claims, ids)
 		page := models.Page[Out]{Data: records}
@@ -110,7 +110,7 @@ func GetOneWithQueryHandler[Q any, Out any](getOne GetOneWithQueryTargetFunc[Q, 
 	}
 }
 
-func UpdateHandler[In any](update UpdateTargetFunc[In]) http.HandlerFunc {
+func BodyHandler[In any](handler BodyTargetFunc[In]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ids, ok := h.ParseUUIDs(w, r)
 		if !ok {
@@ -127,7 +127,7 @@ func UpdateHandler[In any](update UpdateTargetFunc[In]) http.HandlerFunc {
 			return
 		}
 
-		err := update(logger, claims, ids, body)
+		err := handler(logger, claims, ids, body)
 		if err != nil {
 			strErrors := []string{err.Error()}
 

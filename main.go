@@ -28,6 +28,7 @@ func main() {
 
 	config := configuration.Read()
 	core.NewLogger(config.App.LogLevel)
+
 	db := database.InitDB(config.Database)
 	cache := core.NewCache(config.Cache)
 	storage := core.NewStorage(config.Storage, config.App.TrashRetentionDays)
@@ -110,13 +111,21 @@ func main() {
 	)
 
 	// API routes with auth middleware
+	authConfig := config.App.GetAuthConfig()
+
 	r.Route("/api", func(apiRouter chi.Router) {
-		apiRouter.Use(m.Authenticate(config.App.JWTSecret))
+		apiRouter.Use(m.Authenticate(authConfig.JWTSecret, authConfig.MFARequired))
 		apiRouter.Use(m.RateLimit(cache, config.App.TrustedProxies))
 
-		apiRouter.Mount("/v1/users", services.UserService{
-			DB: db,
-		}.Routes())
+		userService := services.UserService{
+			DB:         db,
+			Cache:      cache,
+			AuthConfig: authConfig,
+			Publisher:  eventRouter,
+			Notifier:   notifier,
+		}
+
+		apiRouter.Mount("/v1/users", userService.Routes())
 
 		apiRouter.Mount("/v1/buckets", services.BucketService{
 			DB:                 db,
@@ -130,21 +139,20 @@ func main() {
 
 		apiRouter.Mount("/v1/auth", services.AuthService{
 			DB:             db,
-			JWTSecret:      config.App.JWTSecret,
+			Cache:          cache,
+			AuthConfig:     authConfig,
 			Providers:      providers,
-			WebURL:         config.App.WebURL,
 			Publisher:      eventRouter,
 			ActivityLogger: activity,
 		}.Routes())
 
 		apiRouter.Mount("/v1/invites", services.InviteService{
 			DB:             db,
-			JWTSecret:      config.App.JWTSecret,
 			Storage:        storage,
+			AuthConfig:     authConfig,
 			Publisher:      eventRouter,
 			ActivityLogger: activity,
 			Providers:      providers,
-			WebURL:         config.App.WebURL,
 		}.Routes())
 
 		apiRouter.Mount("/v1/admin", services.AdminService{

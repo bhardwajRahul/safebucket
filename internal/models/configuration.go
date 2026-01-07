@@ -17,6 +17,11 @@ type AppConfiguration struct {
 	APIURL             string              `mapstructure:"api_url"              validate:"required"`
 	AllowedOrigins     []string            `mapstructure:"allowed_origins"      validate:"required"`
 	JWTSecret          string              `mapstructure:"jwt_secret"           validate:"required"`
+	MFAEncryptionKey   string              `mapstructure:"mfa_encryption_key"   validate:"len=32"`
+	MFARequired        bool                `mapstructure:"mfa_required"                                                            default:"false"`
+	AccessTokenExpiry  int                 `mapstructure:"access_token_expiry"  validate:"gte=1,lte=1440"                          default:"60"`
+	RefreshTokenExpiry int                 `mapstructure:"refresh_token_expiry" validate:"gte=1,lte=720"                           default:"600"`
+	MFATokenExpiry     int                 `mapstructure:"mfa_token_expiry"     validate:"gte=1,lte=30"                            default:"5"`
 	LogLevel           string              `mapstructure:"log_level"            validate:"oneof=debug info warn error fatal panic" default:"info"`
 	Port               int                 `mapstructure:"port"                 validate:"gte=80,lte=65535"                        default:"8080"`
 	StaticFiles        StaticConfiguration `mapstructure:"static_files"`
@@ -183,4 +188,30 @@ type LokiConfiguration struct {
 type StaticConfiguration struct {
 	Enabled   bool   `mapstructure:"enabled"   default:"true"`
 	Directory string `mapstructure:"directory" default:"web/dist"`
+}
+
+// AuthConfig groups authentication-related configuration for services.
+// This reduces the number of individual fields passed to services and
+// makes it easier to add new auth-related config without modifying service structs.
+type AuthConfig struct {
+	JWTSecret          string
+	MFAEncryptionKey   string
+	MFARequired        bool
+	AccessTokenExpiry  int
+	RefreshTokenExpiry int
+	MFATokenExpiry     int
+	WebURL             string
+}
+
+// GetAuthConfig extracts authentication configuration from AppConfiguration.
+func (c *AppConfiguration) GetAuthConfig() AuthConfig {
+	return AuthConfig{
+		JWTSecret:          c.JWTSecret,
+		MFAEncryptionKey:   c.MFAEncryptionKey,
+		MFARequired:        c.MFARequired,
+		AccessTokenExpiry:  c.AccessTokenExpiry,
+		RefreshTokenExpiry: c.RefreshTokenExpiry,
+		MFATokenExpiry:     c.MFATokenExpiry,
+		WebURL:             c.WebURL,
+	}
 }

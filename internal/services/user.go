@@ -3,11 +3,14 @@ package services
 import (
 	"errors"
 
+	"api/internal/cache"
 	apierrors "api/internal/errors"
 	"api/internal/handlers"
 	h "api/internal/helpers"
+	"api/internal/messaging"
 	m "api/internal/middlewares"
 	"api/internal/models"
+	"api/internal/notifier"
 	"api/internal/sql"
 
 	"github.com/alexedwards/argon2id"
@@ -18,7 +21,11 @@ import (
 )
 
 type UserService struct {
-	DB *gorm.DB
+	DB         *gorm.DB
+	Cache      cache.ICache
+	AuthConfig models.AuthConfig
+	Publisher  messaging.IPublisher
+	Notifier   notifier.INotifier
 }
 
 func (s UserService) Routes() chi.Router {
@@ -35,13 +42,15 @@ func (s UserService) Routes() chi.Router {
 			Get("/", handlers.GetOneHandler(s.GetUser))
 
 		r.With(m.AuthorizeSelfOrAdmin(0)).
-			With(m.Validate[models.UserUpdateBody]).Patch("/", handlers.UpdateHandler(s.UpdateUser))
+			With(m.Validate[models.UserUpdateBody]).Patch("/", handlers.BodyHandler(s.UpdateUser))
 
 		r.With(m.AuthorizeRole(models.RoleAdmin)).
 			Delete("/", handlers.DeleteHandler(s.DeleteUser))
 
 		r.With(m.AuthorizeSelfOrAdmin(0)).
 			Get("/stats", handlers.GetOneHandler(s.GetUserStats))
+
+		r.Mount("/mfa", NewUserMFAService(s).Routes())
 	})
 	return r
 }
