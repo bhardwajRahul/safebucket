@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"api/internal/configuration"
 	"api/internal/models"
 
 	"github.com/alexedwards/argon2id"
@@ -71,7 +72,7 @@ func TestNewAccessToken(t *testing.T) {
 	provider := "local"
 
 	t.Run("should create valid access token", func(t *testing.T) {
-		token, err := NewAccessToken(jwtSecret, user, provider, 60)
+		token, err := NewAccessToken(jwtSecret, user, provider)
 
 		require.NoError(t, err)
 		assert.NotEmpty(t, token)
@@ -79,7 +80,7 @@ func TestNewAccessToken(t *testing.T) {
 	})
 
 	t.Run("should have correct claims", func(t *testing.T) {
-		token, err := NewAccessToken(jwtSecret, user, provider, 60)
+		token, err := NewAccessToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
 		// Parse the token to verify claims
@@ -99,7 +100,7 @@ func TestNewAccessToken(t *testing.T) {
 	})
 
 	t.Run("should expire in configured minutes", func(t *testing.T) {
-		token, err := NewAccessToken(jwtSecret, user, provider, 60)
+		token, err := NewAccessToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
 		claims := &models.UserClaims{}
@@ -116,29 +117,25 @@ func TestNewAccessToken(t *testing.T) {
 		assert.Less(t, diff, 5*time.Second)
 	})
 
-	t.Run("should respect custom expiry values", func(t *testing.T) {
-		testCases := []int{5, 30, 120, 1440}
+	t.Run("should use configuration constant for expiry", func(t *testing.T) {
+		token, err := NewAccessToken(jwtSecret, user, provider)
+		require.NoError(t, err)
 
-		for _, expiryMinutes := range testCases {
-			token, err := NewAccessToken(jwtSecret, user, provider, expiryMinutes)
-			require.NoError(t, err)
+		claims := &models.UserClaims{}
+		_, err = jwt.ParseWithClaims(token, claims, func(_ *jwt.Token) (interface{}, error) {
+			return []byte(jwtSecret), nil
+		})
 
-			claims := &models.UserClaims{}
-			_, err = jwt.ParseWithClaims(token, claims, func(_ *jwt.Token) (interface{}, error) {
-				return []byte(jwtSecret), nil
-			})
+		require.NoError(t, err)
+		expectedExpiry := time.Now().Add(time.Duration(configuration.AccessTokenExpiry) * time.Minute)
+		actualExpiry := claims.ExpiresAt.Time
 
-			require.NoError(t, err)
-			expectedExpiry := time.Now().Add(time.Duration(expiryMinutes) * time.Minute)
-			actualExpiry := claims.ExpiresAt.Time
-
-			diff := actualExpiry.Sub(expectedExpiry).Abs()
-			assert.Less(t, diff, 5*time.Second, "expiry mismatch for %d minutes", expiryMinutes)
-		}
+		diff := actualExpiry.Sub(expectedExpiry).Abs()
+		assert.Less(t, diff, 5*time.Second)
 	})
 
 	t.Run("should use HS256 signing method", func(t *testing.T) {
-		token, err := NewAccessToken(jwtSecret, user, provider, 60)
+		token, err := NewAccessToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
 		parsedToken, err := jwt.Parse(token, func(_ *jwt.Token) (interface{}, error) {
@@ -150,8 +147,8 @@ func TestNewAccessToken(t *testing.T) {
 	})
 }
 
-// TestParseAccessToken tests JWT access token parsing.
-func TestParseAccessToken(t *testing.T) {
+// TestParseToken tests the generic JWT token parsing function.
+func TestParseToken(t *testing.T) {
 	jwtSecret := "test-secret-key"
 	user := &models.User{
 		ID:    uuid.New(),
@@ -160,45 +157,55 @@ func TestParseAccessToken(t *testing.T) {
 	}
 	provider := "local"
 
-	t.Run("should parse valid access token", func(t *testing.T) {
-		token, err := NewAccessToken(jwtSecret, user, provider, 60)
+	t.Run("should parse valid token with Bearer prefix", func(t *testing.T) {
+		token, err := NewAccessToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
-		claims, err := ParseAccessToken(jwtSecret, "Bearer "+token)
+		claims, err := ParseToken(jwtSecret, "Bearer "+token, true)
 
 		require.NoError(t, err)
 		assert.Equal(t, user.Email, claims.Email)
 		assert.Equal(t, user.ID, claims.UserID)
 		assert.Equal(t, user.Role, claims.Role)
-		assert.Equal(t, provider, claims.Provider)
+		assert.Equal(t, "app:*", claims.Aud) // Audience is in claims, not validated
 	})
 
-	t.Run("should reject token without Bearer prefix", func(t *testing.T) {
-		token, err := NewAccessToken(jwtSecret, user, provider, 60)
+	t.Run("should parse valid token without Bearer prefix when not required", func(t *testing.T) {
+		token, err := NewRefreshToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
-		_, err = ParseAccessToken(jwtSecret, token)
-		assert.Error(t, err)
-		assert.Equal(t, "invalid access token", err.Error())
+		claims, err := ParseToken(jwtSecret, token, false)
+
+		require.NoError(t, err)
+		assert.Equal(t, user.Email, claims.Email)
+		assert.Equal(t, "auth:refresh", claims.Aud)
 	})
 
-	t.Run("should reject token with wrong secret", func(t *testing.T) {
-		token, err := NewAccessToken(jwtSecret, user, provider, 60)
+	t.Run("should reject token without Bearer prefix when required", func(t *testing.T) {
+		token, err := NewAccessToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
-		_, err = ParseAccessToken("wrong-secret", "Bearer "+token)
+		_, err = ParseToken(jwtSecret, token, true)
 		assert.Error(t, err)
-		assert.Equal(t, "invalid access token", err.Error())
+		assert.Equal(t, "invalid token", err.Error())
 	})
 
 	t.Run("should reject malformed token", func(t *testing.T) {
-		_, err := ParseAccessToken(jwtSecret, "Bearer invalid.token.here")
+		_, err := ParseToken(jwtSecret, "Bearer invalid.token.here", true)
 		assert.Error(t, err)
-		assert.Equal(t, "invalid access token", err.Error())
+		assert.Equal(t, "invalid token", err.Error())
+	})
+
+	t.Run("should reject token with wrong secret", func(t *testing.T) {
+		token, err := NewAccessToken(jwtSecret, user, provider)
+		require.NoError(t, err)
+
+		_, err = ParseToken("wrong-secret", "Bearer "+token, true)
+		assert.Error(t, err)
+		assert.Equal(t, "invalid token", err.Error())
 	})
 
 	t.Run("should reject expired token", func(t *testing.T) {
-		// Create a token with past expiration
 		claims := models.UserClaims{
 			Email:    user.Email,
 			UserID:   user.ID,
@@ -215,108 +222,28 @@ func TestParseAccessToken(t *testing.T) {
 		signedToken, err := token.SignedString([]byte(jwtSecret))
 		require.NoError(t, err)
 
-		_, err = ParseAccessToken(jwtSecret, "Bearer "+signedToken)
+		_, err = ParseToken(jwtSecret, "Bearer "+signedToken, true)
 		assert.Error(t, err)
 	})
 
-	t.Run("should reject token with wrong signing method", func(t *testing.T) {
-		// Create token with RS256 instead of HS256
-		claims := models.UserClaims{
-			Email:    user.Email,
-			UserID:   user.ID,
-			Role:     user.Role,
-			Aud:      "app:*",
-			Provider: provider,
-			Issuer:   "safebucket",
-			RegisteredClaims: jwt.RegisteredClaims{
-				IssuedAt:  &jwt.NumericDate{Time: time.Now()},
-				ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(time.Hour)},
-			},
-		}
+	t.Run("should parse token with any audience (no audience validation)", func(t *testing.T) {
+		// Create tokens with different audiences
+		accessToken, _ := NewAccessToken(jwtSecret, user, provider)
+		refreshToken, _ := NewRefreshToken(jwtSecret, user, provider)
+		mfaToken, _ := NewRestrictedAccessToken(jwtSecret, user, configuration.AudienceMFALogin, false, nil)
 
-		// Try to use HMAC with a different algorithm indicator (this is a simulation)
-		// In practice, this test verifies the signing method check works
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signedToken, err := token.SignedString([]byte(jwtSecret))
-		require.NoError(t, err)
+		// ParseToken should accept all of them - audience validation is not its responsibility
+		claims1, err1 := ParseToken(jwtSecret, "Bearer "+accessToken, true)
+		claims2, err2 := ParseToken(jwtSecret, refreshToken, false)
+		claims3, err3 := ParseToken(jwtSecret, "Bearer "+mfaToken, true)
 
-		// This should pass, but if we modify the algorithm in the header, it should fail
-		// For now, verify that the function checks signing method
-		_, err = ParseAccessToken(jwtSecret, "Bearer "+signedToken)
-		require.NoError(t, err) // This one is valid
-	})
+		require.NoError(t, err1)
+		require.NoError(t, err2)
+		require.NoError(t, err3)
 
-	// Security fix tests: Validate audience claim to prevent token type confusion
-	t.Run("should reject MFA token as access token", func(t *testing.T) {
-		// Create an MFA token
-		mfaToken, err := NewMFAToken(jwtSecret, user, 5)
-		require.NoError(t, err)
-
-		// Try to parse it as an access token
-		_, err = ParseAccessToken(jwtSecret, "Bearer "+mfaToken)
-
-		// Should fail with audience error
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "audience", "should reject MFA token with audience error")
-	})
-
-	t.Run("should reject refresh token as access token", func(t *testing.T) {
-		// Create a refresh token
-		refreshToken, err := NewRefreshToken(jwtSecret, user, provider, 600)
-		require.NoError(t, err)
-
-		// Try to parse it as an access token
-		_, err = ParseAccessToken(jwtSecret, "Bearer "+refreshToken)
-
-		// Should fail with audience error
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "audience", "should reject refresh token with audience error")
-	})
-
-	t.Run("should reject token with invalid audience", func(t *testing.T) {
-		// Create a token with a custom invalid audience
-		claims := models.UserClaims{
-			Email:    user.Email,
-			UserID:   user.ID,
-			Role:     user.Role,
-			Aud:      "invalid:custom",
-			Provider: provider,
-			Issuer:   "safebucket",
-			RegisteredClaims: jwt.RegisteredClaims{
-				IssuedAt:  &jwt.NumericDate{Time: time.Now()},
-				ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(time.Hour)},
-			},
-		}
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signedToken, err := token.SignedString([]byte(jwtSecret))
-		require.NoError(t, err)
-
-		// Should fail with audience error
-		_, err = ParseAccessToken(jwtSecret, "Bearer "+signedToken)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "audience")
-	})
-
-	t.Run("should accept only tokens with app:* audience", func(t *testing.T) {
-		claims := models.UserClaims{
-			Email:    user.Email,
-			UserID:   user.ID,
-			Role:     user.Role,
-			Aud:      "app:*",
-			Provider: provider,
-			Issuer:   "safebucket",
-			RegisteredClaims: jwt.RegisteredClaims{
-				IssuedAt:  &jwt.NumericDate{Time: time.Now()},
-				ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(time.Hour)},
-			},
-		}
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signedToken, err := token.SignedString([]byte(jwtSecret))
-		require.NoError(t, err)
-
-		parsedClaims, err := ParseAccessToken(jwtSecret, "Bearer "+signedToken)
-		require.NoError(t, err)
-		assert.Equal(t, "app:*", parsedClaims.Aud)
+		assert.Equal(t, "app:*", claims1.Aud)
+		assert.Equal(t, "auth:refresh", claims2.Aud)
+		assert.Equal(t, configuration.AudienceMFALogin, claims3.Aud)
 	})
 }
 
@@ -331,7 +258,7 @@ func TestNewRefreshToken(t *testing.T) {
 	provider := "local"
 
 	t.Run("should create valid refresh token", func(t *testing.T) {
-		token, err := NewRefreshToken(jwtSecret, user, provider, 600)
+		token, err := NewRefreshToken(jwtSecret, user, provider)
 
 		require.NoError(t, err)
 		assert.NotEmpty(t, token)
@@ -339,7 +266,7 @@ func TestNewRefreshToken(t *testing.T) {
 	})
 
 	t.Run("should have correct refresh audience", func(t *testing.T) {
-		token, err := NewRefreshToken(jwtSecret, user, provider, 600)
+		token, err := NewRefreshToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
 		claims := &models.UserClaims{}
@@ -352,7 +279,7 @@ func TestNewRefreshToken(t *testing.T) {
 	})
 
 	t.Run("should expire in configured minutes", func(t *testing.T) {
-		token, err := NewRefreshToken(jwtSecret, user, provider, 600)
+		token, err := NewRefreshToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
 		claims := &models.UserClaims{}
@@ -368,25 +295,21 @@ func TestNewRefreshToken(t *testing.T) {
 		assert.Less(t, diff, 5*time.Second)
 	})
 
-	t.Run("should respect custom expiry values", func(t *testing.T) {
-		testCases := []int{60, 240, 720}
+	t.Run("should use configuration constant for expiry", func(t *testing.T) {
+		token, err := NewRefreshToken(jwtSecret, user, provider)
+		require.NoError(t, err)
 
-		for _, expiryMinutes := range testCases {
-			token, err := NewRefreshToken(jwtSecret, user, provider, expiryMinutes)
-			require.NoError(t, err)
+		claims := &models.UserClaims{}
+		_, err = jwt.ParseWithClaims(token, claims, func(_ *jwt.Token) (interface{}, error) {
+			return []byte(jwtSecret), nil
+		})
 
-			claims := &models.UserClaims{}
-			_, err = jwt.ParseWithClaims(token, claims, func(_ *jwt.Token) (interface{}, error) {
-				return []byte(jwtSecret), nil
-			})
+		require.NoError(t, err)
+		expectedExpiry := time.Now().Add(time.Duration(configuration.RefreshTokenExpiry) * time.Minute)
+		actualExpiry := claims.ExpiresAt.Time
 
-			require.NoError(t, err)
-			expectedExpiry := time.Now().Add(time.Duration(expiryMinutes) * time.Minute)
-			actualExpiry := claims.ExpiresAt.Time
-
-			diff := actualExpiry.Sub(expectedExpiry).Abs()
-			assert.Less(t, diff, 5*time.Second, "expiry mismatch for %d minutes", expiryMinutes)
-		}
+		diff := actualExpiry.Sub(expectedExpiry).Abs()
+		assert.Less(t, diff, 5*time.Second)
 	})
 }
 
@@ -401,7 +324,7 @@ func TestParseRefreshToken(t *testing.T) {
 	provider := "local"
 
 	t.Run("should parse valid refresh token", func(t *testing.T) {
-		token, err := NewRefreshToken(jwtSecret, user, provider, 600)
+		token, err := NewRefreshToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
 		claims, err := ParseRefreshToken(jwtSecret, token)
@@ -414,16 +337,16 @@ func TestParseRefreshToken(t *testing.T) {
 
 	t.Run("should reject access token as refresh token", func(t *testing.T) {
 		// Try to use access token as refresh token
-		token, err := NewAccessToken(jwtSecret, user, provider, 60)
+		token, err := NewAccessToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
 		_, err = ParseRefreshToken(jwtSecret, token)
 		assert.Error(t, err)
-		assert.Equal(t, "invalid refresh token", err.Error())
+		assert.Equal(t, "invalid refresh token audience", err.Error())
 	})
 
 	t.Run("should reject token with wrong secret", func(t *testing.T) {
-		token, err := NewRefreshToken(jwtSecret, user, provider, 600)
+		token, err := NewRefreshToken(jwtSecret, user, provider)
 		require.NoError(t, err)
 
 		_, err = ParseRefreshToken("wrong-secret", token)
@@ -452,8 +375,8 @@ func TestParseRefreshToken(t *testing.T) {
 	})
 }
 
-// TestNewMFAToken tests MFA token generation.
-func TestNewMFAToken(t *testing.T) {
+// TestNewRestrictedAccessToken tests restricted access token generation.
+func TestNewRestrictedAccessToken(t *testing.T) {
 	jwtSecret := "test-secret-key"
 	user := &models.User{
 		ID:    uuid.New(),
@@ -461,16 +384,16 @@ func TestNewMFAToken(t *testing.T) {
 		Role:  models.RoleUser,
 	}
 
-	t.Run("should create valid MFA token", func(t *testing.T) {
-		token, err := NewMFAToken(jwtSecret, user, 5)
+	t.Run("should create valid restricted access token", func(t *testing.T) {
+		token, err := NewRestrictedAccessToken(jwtSecret, user, configuration.AudienceMFALogin, false, nil)
 
 		require.NoError(t, err)
 		assert.NotEmpty(t, token)
 		assert.True(t, strings.Count(token, ".") == 2)
 	})
 
-	t.Run("should have correct MFA audience", func(t *testing.T) {
-		token, err := NewMFAToken(jwtSecret, user, 5)
+	t.Run("should have correct auth:mfa audience", func(t *testing.T) {
+		token, err := NewRestrictedAccessToken(jwtSecret, user, configuration.AudienceMFALogin, false, nil)
 		require.NoError(t, err)
 
 		claims := &models.UserClaims{}
@@ -479,13 +402,13 @@ func TestNewMFAToken(t *testing.T) {
 		})
 
 		require.NoError(t, err)
-		assert.Equal(t, "auth:mfa", claims.Aud)
+		assert.Equal(t, configuration.AudienceMFALogin, claims.Aud)
 		assert.Equal(t, user.Email, claims.Email)
 		assert.Equal(t, user.ID, claims.UserID)
 	})
 
 	t.Run("should expire in configured minutes", func(t *testing.T) {
-		token, err := NewMFAToken(jwtSecret, user, 5)
+		token, err := NewRestrictedAccessToken(jwtSecret, user, configuration.AudienceMFALogin, false, nil)
 		require.NoError(t, err)
 
 		claims := &models.UserClaims{}
@@ -501,94 +424,21 @@ func TestNewMFAToken(t *testing.T) {
 		assert.Less(t, diff, 5*time.Second)
 	})
 
-	t.Run("should respect custom expiry values", func(t *testing.T) {
-		testCases := []int{1, 5, 15, 30}
-
-		for _, expiryMinutes := range testCases {
-			token, err := NewMFAToken(jwtSecret, user, expiryMinutes)
-			require.NoError(t, err)
-
-			claims := &models.UserClaims{}
-			_, err = jwt.ParseWithClaims(token, claims, func(_ *jwt.Token) (interface{}, error) {
-				return []byte(jwtSecret), nil
-			})
-
-			require.NoError(t, err)
-			expectedExpiry := time.Now().Add(time.Duration(expiryMinutes) * time.Minute)
-			actualExpiry := claims.ExpiresAt.Time
-
-			diff := actualExpiry.Sub(expectedExpiry).Abs()
-			assert.Less(t, diff, 5*time.Second, "expiry mismatch for %d minutes", expiryMinutes)
-		}
-	})
-}
-
-// TestParseMFAToken tests MFA token parsing.
-func TestParseMFAToken(t *testing.T) {
-	jwtSecret := "test-secret-key"
-	user := &models.User{
-		ID:    uuid.New(),
-		Email: "test@example.com",
-		Role:  models.RoleUser,
-	}
-
-	t.Run("should parse valid MFA token", func(t *testing.T) {
-		token, err := NewMFAToken(jwtSecret, user, 5)
+	t.Run("should use configuration constant for expiry", func(t *testing.T) {
+		token, err := NewRestrictedAccessToken(jwtSecret, user, configuration.AudienceMFALogin, false, nil)
 		require.NoError(t, err)
 
-		claims, err := ParseMFAToken(jwtSecret, token)
+		claims := &models.UserClaims{}
+		_, err = jwt.ParseWithClaims(token, claims, func(_ *jwt.Token) (interface{}, error) {
+			return []byte(jwtSecret), nil
+		})
 
 		require.NoError(t, err)
-		assert.Equal(t, user.Email, claims.Email)
-		assert.Equal(t, user.ID, claims.UserID)
-		assert.Equal(t, "auth:mfa", claims.Aud)
-	})
+		expectedExpiry := time.Now().Add(time.Duration(configuration.MFATokenExpiry) * time.Minute)
+		actualExpiry := claims.ExpiresAt.Time
 
-	t.Run("should reject access token as MFA token", func(t *testing.T) {
-		token, err := NewAccessToken(jwtSecret, user, "local", 60)
-		require.NoError(t, err)
-
-		_, err = ParseMFAToken(jwtSecret, token)
-		assert.Error(t, err)
-		assert.Equal(t, "invalid MFA token audience", err.Error())
-	})
-
-	t.Run("should reject refresh token as MFA token", func(t *testing.T) {
-		token, err := NewRefreshToken(jwtSecret, user, "local", 600)
-		require.NoError(t, err)
-
-		_, err = ParseMFAToken(jwtSecret, token)
-		assert.Error(t, err)
-		assert.Equal(t, "invalid MFA token audience", err.Error())
-	})
-
-	t.Run("should reject token with wrong secret", func(t *testing.T) {
-		token, err := NewMFAToken(jwtSecret, user, 5)
-		require.NoError(t, err)
-
-		_, err = ParseMFAToken("wrong-secret", token)
-		assert.Error(t, err)
-	})
-
-	t.Run("should reject expired MFA token", func(t *testing.T) {
-		claims := models.UserClaims{
-			Email:    user.Email,
-			UserID:   user.ID,
-			Role:     user.Role,
-			Aud:      "auth:mfa",
-			Provider: "",
-			Issuer:   "safebucket",
-			RegisteredClaims: jwt.RegisteredClaims{
-				IssuedAt:  &jwt.NumericDate{Time: time.Now().Add(-10 * time.Minute)},
-				ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(-5 * time.Minute)},
-			},
-		}
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signedToken, err := token.SignedString([]byte(jwtSecret))
-		require.NoError(t, err)
-
-		_, err = ParseMFAToken(jwtSecret, signedToken)
-		assert.Error(t, err)
+		diff := actualExpiry.Sub(expectedExpiry).Abs()
+		assert.Less(t, diff, 5*time.Second)
 	})
 }
 

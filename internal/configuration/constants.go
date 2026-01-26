@@ -2,6 +2,21 @@ package configuration
 
 const AppName = "safebucket"
 
+// JWT Audience constants for token type separation.
+const (
+	AudienceAccessToken  = "app:*"
+	AudienceRefreshToken = "auth:refresh"
+	AudienceMFALogin     = "auth:mfa:login"
+	AudienceMFAReset     = "auth:mfa:password-reset"
+)
+
+// JWT Token expiry times (in minutes).
+const (
+	AccessTokenExpiry  = 60
+	RefreshTokenExpiry = 600
+	MFATokenExpiry     = 5 // For restricted access during MFA flow
+)
+
 const (
 	CacheMaxAppIdentityLifetime = 60
 	CacheAppIdentityKey         = "app:identity"
@@ -19,7 +34,7 @@ const (
 const UploadPolicyExpirationInMinutes = 15
 
 const (
-	SecurityChallengeExpirationMinutes = 30
+	SecurityChallengeExpirationMinutes = 5
 	SecurityChallengeMaxFailedAttempts = 3
 )
 

@@ -8,13 +8,86 @@ import (
 	"strings"
 	"time"
 
-	"api/internal/models"
-
 	"api/internal/configuration"
+	"api/internal/models"
 
 	"github.com/alexedwards/argon2id"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
+
+// tokenConfig holds configuration for creating a specific token type.
+type tokenConfig struct {
+	audience      string
+	provider      string
+	mfa           *bool // nil = don't set (defaults to false), otherwise set to this value
+	expiryMinutes int
+	challengeID   *uuid.UUID
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+// createToken is a generic helper for creating JWT tokens with specified configuration.
+// This private function consolidates the common token creation logic used by all public
+// token creation functions (NewAccessToken, NewRefreshToken, etc.).
+func createToken(jwtSecret string, user *models.User, config tokenConfig) (string, error) {
+	claims := models.UserClaims{
+		Email:    user.Email,
+		UserID:   user.ID,
+		Role:     user.Role,
+		Aud:      config.audience,
+		Issuer:   configuration.AppName,
+		Provider: config.provider,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  &jwt.NumericDate{Time: time.Now()},
+			ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(time.Minute * time.Duration(config.expiryMinutes))},
+		},
+	}
+
+	if config.mfa != nil {
+		claims.MFA = *config.mfa
+	}
+
+	if config.challengeID != nil {
+		claims.ChallengeID = config.challengeID
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(jwtSecret))
+}
+
+// ParseToken parses and validates a JWT token without audience validation.
+// It validates signature, expiry, and issuer only.
+// Audience validation is delegated to the AudienceValidate middleware for route-specific rules.
+// The requireBearer parameter controls whether the "Bearer " prefix is required.
+func ParseToken(jwtSecret string, tokenString string, requireBearer bool) (models.UserClaims, error) {
+	if requireBearer {
+		if !strings.HasPrefix(tokenString, "Bearer ") {
+			return models.UserClaims{}, errors.New("invalid token")
+		}
+		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+	}
+
+	claims := &models.UserClaims{}
+
+	_, err := jwt.ParseWithClaims(
+		tokenString,
+		claims,
+		func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, errors.New("unexpected signing method")
+			}
+			return []byte(jwtSecret), nil
+		},
+	)
+	if err != nil {
+		return models.UserClaims{}, errors.New("invalid token")
+	}
+
+	return *claims, nil
+}
 
 func CreateHash(password string) (string, error) {
 	argonParams := argon2id.Params{
@@ -32,88 +105,37 @@ func CreateHash(password string) (string, error) {
 	return hash, nil
 }
 
-func NewAccessToken(jwtSecret string, user *models.User, provider string, expiryMinutes int) (string, error) {
-	claims := models.UserClaims{
-		Email:    user.Email,
-		UserID:   user.ID,
-		Role:     user.Role,
-		Aud:      "app:*",
-		Provider: provider,
-		Issuer:   configuration.AppName,
-		MFA:      user.HasMFAEnabled(),
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  &jwt.NumericDate{Time: time.Now()},
-			ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(time.Minute * time.Duration(expiryMinutes))},
-		},
-	}
-	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return accessToken.SignedString([]byte(jwtSecret))
+func NewAccessToken(jwtSecret string, user *models.User, provider string) (string, error) {
+	return createToken(jwtSecret, user, tokenConfig{
+		audience:      configuration.AudienceAccessToken,
+		provider:      provider,
+		mfa:           boolPtr(user.HasMFAEnabled()),
+		expiryMinutes: configuration.AccessTokenExpiry,
+	})
 }
 
-func ParseAccessToken(jwtSecret string, accessToken string) (models.UserClaims, error) {
-	if !strings.HasPrefix(accessToken, "Bearer ") {
-		return models.UserClaims{}, errors.New("invalid access token")
-	}
-	accessToken = strings.TrimPrefix(accessToken, "Bearer ")
-	claims := &models.UserClaims{}
-
-	_, err := jwt.ParseWithClaims(
-		accessToken,
-		claims,
-		func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, errors.New("unexpected signing method")
-			}
-			return []byte(jwtSecret), nil
-		},
-	)
-	if err != nil {
-		return models.UserClaims{}, errors.New("invalid access token")
-	}
-
-	if claims.Aud != "app:*" {
-		return models.UserClaims{}, errors.New("invalid access token audience")
-	}
-
-	return *claims, nil
+func NewRefreshToken(jwtSecret string, user *models.User, provider string) (string, error) {
+	return createToken(jwtSecret, user, tokenConfig{
+		audience:      configuration.AudienceRefreshToken,
+		provider:      provider,
+		mfa:           boolPtr(user.HasMFAEnabled()),
+		expiryMinutes: configuration.RefreshTokenExpiry,
+	})
 }
 
-func NewRefreshToken(jwtSecret string, user *models.User, provider string, expiryMinutes int) (string, error) {
-	claims := models.UserClaims{
-		Email:    user.Email,
-		UserID:   user.ID,
-		Role:     user.Role,
-		Aud:      "auth:refresh",
-		Issuer:   configuration.AppName,
-		Provider: provider,
-		MFA:      user.HasMFAEnabled(),
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  &jwt.NumericDate{Time: time.Now()},
-			ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(time.Minute * time.Duration(expiryMinutes))},
-		},
-	}
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return refreshToken.SignedString([]byte(jwtSecret))
-}
-
+// ParseRefreshToken validates and parses a refresh token.
+// Returns error if token is invalid or has wrong audience.
 func ParseRefreshToken(jwtSecret string, refreshToken string) (models.UserClaims, error) {
-	claims := &models.UserClaims{}
-
-	_, err := jwt.ParseWithClaims(
-		refreshToken,
-		claims,
-		func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, errors.New("unexpected signing method")
-			}
-			return []byte(jwtSecret), nil
-		},
-	)
-
-	if claims.Aud != "auth:refresh" {
+	claims, err := ParseToken(jwtSecret, refreshToken, false)
+	if err != nil {
 		return models.UserClaims{}, errors.New("invalid refresh token")
 	}
-	return *claims, err
+
+	if claims.Aud != configuration.AudienceRefreshToken {
+		return models.UserClaims{}, errors.New("invalid refresh token audience")
+	}
+
+	return claims, nil
 }
 
 func GetUserClaims(c context.Context) (models.UserClaims, error) {
@@ -138,48 +160,23 @@ func GenerateSecret() (string, error) {
 	return string(secret), nil
 }
 
-// NewMFAToken creates a short-lived JWT token for MFA verification during login.
-// This token is issued after successful password authentication but before MFA verification.
-// It can only be used to complete the MFA verification step.
-func NewMFAToken(jwtSecret string, user *models.User, expiryMinutes int) (string, error) {
-	claims := models.UserClaims{
-		Email:    user.Email,
-		UserID:   user.ID,
-		Role:     user.Role,
-		Aud:      "auth:mfa",
-		Issuer:   configuration.AppName,
-		Provider: string(user.ProviderType),
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  &jwt.NumericDate{Time: time.Now()},
-			ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(time.Minute * time.Duration(expiryMinutes))},
-		},
-	}
-	mfaToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return mfaToken.SignedString([]byte(jwtSecret))
-}
-
-// ParseMFAToken validates and parses an MFA token.
-// Returns the user claims if the token is valid and has the correct audience.
-func ParseMFAToken(jwtSecret string, mfaToken string) (models.UserClaims, error) {
-	claims := &models.UserClaims{}
-
-	_, err := jwt.ParseWithClaims(
-		mfaToken,
-		claims,
-		func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, errors.New("unexpected signing method")
-			}
-			return []byte(jwtSecret), nil
-		},
-	)
-	if err != nil {
-		return models.UserClaims{}, errors.New("invalid MFA token")
-	}
-
-	if claims.Aud != "auth:mfa" {
-		return models.UserClaims{}, errors.New("invalid MFA token audience")
-	}
-
-	return *claims, nil
+// NewRestrictedAccessToken creates a restricted access token for MFA flows.
+// This token grants limited access: only MFA device management and verification endpoints.
+// Used for both login MFA and password reset MFA flows.
+// Audience: "auth:mfa:login" or "auth:mfa:password-reset".
+// For password reset flow, challengeID should be provided to link the token to the challenge.
+func NewRestrictedAccessToken(
+	jwtSecret string,
+	user *models.User,
+	audience string,
+	mfaVerified bool,
+	challengeID *uuid.UUID,
+) (string, error) {
+	return createToken(jwtSecret, user, tokenConfig{
+		audience:      audience,
+		provider:      string(user.ProviderType),
+		mfa:           boolPtr(mfaVerified),
+		expiryMinutes: configuration.MFATokenExpiry,
+		challengeID:   challengeID,
+	})
 }

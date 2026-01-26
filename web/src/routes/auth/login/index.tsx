@@ -74,19 +74,15 @@ function Login() {
 
     const result = await loginLocal(data);
 
-    if (result.mfaRequired && result.mfaToken && result.userId) {
-      // Store MFA token, user ID, and devices in memory context
-      setMFAAuth(result.mfaToken, result.userId, result.devices || []);
-      // Redirect to MFA verification
+    if (result.mfaRequired && result.restrictedToken && result.userId) {
+      // Store restricted token and user ID in context
+      // Context will automatically fetch devices to determine setup vs verify
+      setMFAAuth(result.restrictedToken);
+      // Redirect to MFA page (will show setup or verify based on devices)
       navigate({
         to: "/auth/mfa",
         search: { redirect },
       });
-    } else if (result.mfaSetupRequired && result.mfaToken && result.userId) {
-      // Store MFA token and user ID in memory context (used to skip password during setup)
-      setMFAAuth(result.mfaToken, result.userId, []);
-      // Redirect to MFA setup (admin requires MFA but not set up)
-      navigate({ to: "/auth/mfa/setup-required", search: { redirect } });
     } else if (result.success) {
       // Navigate to redirect or home
       navigate({ to: redirect || "/" });

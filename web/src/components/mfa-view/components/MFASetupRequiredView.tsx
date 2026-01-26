@@ -24,6 +24,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useMFAAuth } from "@/context/MFAAuthContext";
+import { useRefreshSession } from "@/hooks/useAuth";
 
 type ViewMode = "loading" | "error" | "setup" | "success";
 
@@ -38,7 +39,8 @@ export function MFASetupRequiredView({
 }: IMFASetupRequiredViewProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { mfaToken, userId } = useMFAAuth();
+  const refreshSession = useRefreshSession();
+  const { restrictedToken } = useMFAAuth();
   const setupStarted = useRef(false);
 
   const [viewMode, setViewMode] = useState<ViewMode>("loading");
@@ -58,18 +60,18 @@ export function MFASetupRequiredView({
     goToVerify,
     goBack,
     verifyCode,
-  } = useMFASetup(userId ?? "", mfaToken ?? undefined);
+  } = useMFASetup(restrictedToken ?? undefined);
 
   useEffect(() => {
     if (viewMode === "loading" && !setupStarted.current) {
-      if (userId && mfaToken) {
+      if (restrictedToken) {
         setupStarted.current = true;
         setViewMode("setup");
       } else {
         navigate({ to: "/auth/login", search: { redirect: undefined } });
       }
     }
-  }, [viewMode, navigate, userId, mfaToken]);
+  }, [viewMode, navigate, restrictedToken]);
 
   useEffect(() => {
     if (step === "success") {
@@ -81,10 +83,11 @@ export function MFASetupRequiredView({
   useEffect(() => {
     if (viewMode === "success") {
       setTimeout(() => {
+        refreshSession();
         navigate({ to: redirectPath || "/" });
       }, MFA_SUCCESS_REDIRECT_DELAY);
     }
-  }, [viewMode, navigate, redirectPath]);
+  }, [viewMode, navigate, redirectPath, refreshSession]);
 
   const handleStartSetup = async () => {
     try {
@@ -143,7 +146,7 @@ export function MFASetupRequiredView({
                     disabled={isLoading}
                   />
                 </div>
-                {!mfaToken && (
+                {!restrictedToken && (
                   <div className="space-y-2">
                     <Label htmlFor="password">{t("auth.password")}</Label>
                     <Input
@@ -160,7 +163,7 @@ export function MFASetupRequiredView({
                   className="w-full"
                   onClick={handleStartSetup}
                   disabled={
-                    isLoading || !deviceName || (!password && !mfaToken)
+                    isLoading || !deviceName || (!password && !restrictedToken)
                   }
                 >
                   {isLoading && (

@@ -40,7 +40,6 @@ export interface IMFADevice {
   name: string;
   type: MFADeviceType;
   is_default: boolean;
-  is_verified: boolean;
   created_at: string;
   verified_at?: string;
   last_used_at?: string;
@@ -66,5 +65,4 @@ export interface ILoginResponse {
   mfa_required: boolean;
   mfa_token?: string;
   mfa_setup_required?: boolean;
-  devices?: Array<IMFADevice>;
 }

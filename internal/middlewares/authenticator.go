@@ -3,84 +3,59 @@ package middlewares
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"api/internal/configuration"
 	"api/internal/helpers"
 	"api/internal/models"
 )
 
-func Authenticate(jwtSecret string, mfaRequired bool) func(next http.Handler) http.Handler {
+// AuthExcludedKey is used to store auth exclusion flag in context.
+type AuthExcludedKey struct{}
+
+// Authenticate middleware handles authentication.
+func Authenticate(jwtSecret string) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
-			if isExcluded(r.URL.Path, r.Method) {
-				next.ServeHTTP(w, r)
+			// Check if path is excluded from auth (default = auth required)
+			excluded := isAuthExcluded(r.URL.Path, r.Method)
+			ctx := context.WithValue(r.Context(), AuthExcludedKey{}, excluded)
+
+			if excluded {
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
 			accessToken := r.Header.Get("Authorization")
-			userClaims, err := helpers.ParseAccessToken(jwtSecret, accessToken)
+
+			// Parse token (signature, expiry validation only - no audience check)
+			userClaims, err := helpers.ParseToken(jwtSecret, accessToken, true)
 			if err != nil {
-				if isMFABypassPath(r.URL.Path, r.Method) {
-					next.ServeHTTP(w, r)
-					return
-				}
 				helpers.RespondWithError(w, 403, []string{"FORBIDDEN"})
 				return
 			}
 
-			if mfaRequired && !userClaims.MFA && userClaims.Provider == string(models.LocalProviderType) {
-				if !isMFABypassPath(r.URL.Path, r.Method) {
-					helpers.RespondWithError(w, 403, []string{"MFA_SETUP_REQUIRED"})
-					return
-				}
-			}
-
-			ctx := context.WithValue(r.Context(), models.UserClaimKey{}, userClaims)
+			ctx = context.WithValue(ctx, models.UserClaimKey{}, userClaims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		}
 		return http.HandlerFunc(fn)
 	}
 }
 
-func isMFABypassPath(path, method string) bool {
-	for _, rule := range configuration.MFABypassRules {
-		if rule.Method != "*" && rule.Method != method {
-			continue
-		}
-
-		if rule.PathSuffix == "" {
-			if strings.HasPrefix(path, rule.PathPrefix) {
-				remaining := strings.TrimPrefix(path, rule.PathPrefix)
-				if remaining == "" || !strings.Contains(remaining, "/") {
-					return true
-				}
-			}
-		} else {
-			if strings.HasPrefix(path, rule.PathPrefix) && strings.HasSuffix(path, rule.PathSuffix) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isExcluded(path, method string) bool {
-	if exactRules, exists := configuration.AuthRuleExactMatchPath[path]; exists {
-		for _, rule := range exactRules {
-			if rule.Method == "*" || rule.Method == method {
-				return !rule.RequireAuth
-			}
+// isAuthExcluded checks if path is excluded from authentication.
+// Returns false by default (auth required unless explicitly excluded).
+func isAuthExcluded(path, method string) bool {
+	// Phase 1: Fast exact path match (O(1) lookup)
+	if m, ok := configuration.AuthExcludedExactPaths[path]; ok {
+		if m == "*" || m == method {
+			return true
 		}
 	}
 
-	for _, rule := range configuration.AuthRulePrefixMatchPath {
-		if strings.HasPrefix(path, rule.Path) {
-			if rule.Method == "*" || rule.Method == method {
-				return !rule.RequireAuth
-			}
+	for _, rule := range configuration.AuthExcludedPatterns {
+		if rule.Pattern.MatchString(path) && (rule.Method == "*" || rule.Method == method) {
+			return true
 		}
 	}
 
-	return false
+	return false // Auth required by default
 }

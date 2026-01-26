@@ -142,7 +142,7 @@ func TestAuthenticate(t *testing.T) {
 			}
 			recorder := httptest.NewRecorder()
 
-			handler := Authenticate(testJWTSecret, false)(http.HandlerFunc(mockAuthenticatedNextHandler))
+			handler := Authenticate(testJWTSecret)(http.HandlerFunc(mockAuthenticatedNextHandler))
 			handler.ServeHTTP(recorder, req)
 
 			assert.Equal(t, tt.expectedStatus, recorder.Code)
@@ -193,7 +193,7 @@ func TestAuthenticate_ExcludedPaths(t *testing.T) {
 		},
 		{
 			name:           "Excluded path - /api/v1/invites/* without token (GET)",
-			path:           "/api/v1/invites/123",
+			path:           "/api/v1/invites/550e8400-e29b-41d4-a716-446655440000",
 			method:         http.MethodGet,
 			authHeader:     "",
 			expectedStatus: http.StatusOK,
@@ -239,7 +239,7 @@ func TestAuthenticate_ExcludedPaths(t *testing.T) {
 				_, _ = w.Write([]byte("OK"))
 			})
 
-			handler := Authenticate(testJWTSecret, false)(simpleHandler)
+			handler := Authenticate(testJWTSecret)(simpleHandler)
 			handler.ServeHTTP(recorder, req)
 
 			assert.Equal(t, tt.expectedStatus, recorder.Code, tt.description)
@@ -252,45 +252,100 @@ func TestAuthenticate_ExcludedPaths(t *testing.T) {
 	}
 }
 
-func TestIsExcluded(t *testing.T) {
+func TestIsAuthExcluded(t *testing.T) {
 	testCases := []struct {
 		name     string
 		path     string
 		method   string
 		expected bool
 	}{
+		// Auth login endpoint - only POST is excluded
 		{
-			name:     "Excluded - prefix match /api/v1/auth with GET",
-			path:     "/api/v1/auth/login",
-			method:   "GET",
-			expected: true,
-		},
-		{
-			name:     "Excluded - prefix match /api/v1/auth with POST",
+			name:     "Excluded - /api/v1/auth/login with POST",
 			path:     "/api/v1/auth/login",
 			method:   "POST",
 			expected: true,
 		},
 		{
-			name:     "Excluded - prefix match /api/v1/auth with wildcard",
-			path:     "/api/v1/auth/providers",
-			method:   "PUT",
-			expected: true,
+			name:     "Not excluded - /api/v1/auth/login with GET",
+			path:     "/api/v1/auth/login",
+			method:   "GET",
+			expected: false,
 		},
+		// Auth providers - wildcard method
 		{
-			name:     "Excluded - prefix match /api/v1/invites with GET",
-			path:     "/api/v1/invites/123",
+			name:     "Excluded - /api/v1/auth/providers with GET",
+			path:     "/api/v1/auth/providers",
 			method:   "GET",
 			expected: true,
 		},
 		{
-			name:     "Not excluded - /api/v1/buckets (RequireAuth: true)",
+			name:     "Excluded - /api/v1/auth/providers/google/begin with GET",
+			path:     "/api/v1/auth/providers/google/begin",
+			method:   "GET",
+			expected: true,
+		},
+		// Auth verify and refresh - only POST is excluded
+		{
+			name:     "Excluded - /api/v1/auth/verify with POST",
+			path:     "/api/v1/auth/verify",
+			method:   "POST",
+			expected: true,
+		},
+		{
+			name:     "Excluded - /api/v1/auth/refresh with POST",
+			path:     "/api/v1/auth/refresh",
+			method:   "POST",
+			expected: true,
+		},
+		// MFA verify - requires auth (not in exclusion list)
+		{
+			name:     "Not excluded - /api/v1/auth/mfa/verify requires auth",
+			path:     "/api/v1/auth/mfa/verify",
+			method:   "POST",
+			expected: false,
+		},
+		// Password reset paths
+		{
+			name:     "Excluded - /api/v1/auth/reset-password with POST (initiate)",
+			path:     "/api/v1/auth/reset-password",
+			method:   "POST",
+			expected: true,
+		},
+		{
+			name:     "Excluded - /api/v1/auth/reset-password/{id}/validate with POST",
+			path:     "/api/v1/auth/reset-password/550e8400-e29b-41d4-a716-446655440000/validate",
+			method:   "POST",
+			expected: true,
+		},
+		{
+			name:     "Not excluded - /api/v1/auth/reset-password/{id}/complete requires auth",
+			path:     "/api/v1/auth/reset-password/abc-123/complete",
+			method:   "POST",
+			expected: false,
+		},
+		// Invites - wildcard method but POST requires auth (exact path override)
+		{
+			name:     "Excluded - /api/v1/invites/123 with GET",
+			path:     "/api/v1/invites/550e8400-e29b-41d4-a716-446655440000",
+			method:   "GET",
+			expected: true,
+		},
+		{
+			name:     "Not excluded - /api/v1/invites with POST (exact path override)",
+			path:     "/api/v1/invites",
+			method:   "POST",
+			expected: false,
+		},
+		// General paths - auth required by default
+		{
+			name:     "Not excluded - /api/v1/buckets (auth required by default)",
 			path:     "/api/v1/buckets",
 			method:   "GET",
 			expected: false,
 		},
 		{
-			name:     "Not excluded - /api/v1/users (RequireAuth: true)",
+			name:     "Not excluded - /api/v1/users (auth required by default)",
 			path:     "/api/v1/users",
 			method:   "GET",
 			expected: false,
@@ -313,11 +368,17 @@ func TestIsExcluded(t *testing.T) {
 			method:   "GET",
 			expected: false,
 		},
+		{
+			name:     "Not excluded - /api/v1/mfa requires auth",
+			path:     "/api/v1/mfa/devices",
+			method:   "GET",
+			expected: false,
+		},
 	}
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isExcluded(tt.path, tt.method)
+			result := isAuthExcluded(tt.path, tt.method)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -346,7 +407,7 @@ func TestAuthenticate_UserClaimsInContext(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+validToken)
 	recorder := httptest.NewRecorder()
 
-	handler := Authenticate(testJWTSecret, false)(testHandler)
+	handler := Authenticate(testJWTSecret)(testHandler)
 	handler.ServeHTTP(recorder, req)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
@@ -389,7 +450,7 @@ func TestAuthenticate_ContextPropagation(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 
-	handler := Authenticate(testJWTSecret, false)(testHandler)
+	handler := Authenticate(testJWTSecret)(testHandler)
 	handler.ServeHTTP(recorder, req)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)

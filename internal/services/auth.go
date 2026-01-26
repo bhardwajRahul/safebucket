@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"api/internal/activity"
 	"api/internal/cache"
 	"api/internal/configuration"
 	apierrors "api/internal/errors"
-	"api/internal/events"
 	"api/internal/handlers"
 	h "api/internal/helpers"
 	"api/internal/messaging"
@@ -27,7 +25,6 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type AuthService struct {
@@ -50,14 +47,7 @@ func (s AuthService) Routes() chi.Router {
 			Post("/verify", handlers.CreateHandler(s.VerifyMFALogin))
 	})
 
-	r.Route("/reset-password", func(r chi.Router) {
-		r.With(m.Validate[models.PasswordResetRequestBody]).
-			Post("/", handlers.CreateHandler(s.RequestPasswordReset))
-		r.Route("/{id0}", func(r chi.Router) {
-			r.With(m.Validate[models.PasswordResetValidateBody]).
-				Post("/validate", handlers.CreateHandler(s.ValidatePasswordReset))
-		})
-	})
+	r.Mount("/reset-password", NewAuthPasswordResetService(s).Routes())
 
 	r.Route("/providers", func(r chi.Router) {
 		r.Get("/", handlers.GetListHandler(s.GetProviderList))
@@ -85,7 +75,6 @@ func (s AuthService) Login(
 		return models.AuthLoginResponse{}, apierrors.NewAPIError(403, "FORBIDDEN")
 	}
 
-	// Load user with verified MFA devices
 	var searchUser models.User
 	result := s.DB.Preload("MFADevices", "is_verified = ?", true).
 		Where("email = ? AND provider_type = ? AND provider_key = ?",
@@ -104,13 +93,10 @@ func (s AuthService) Login(
 	verifiedDevices := searchUser.GetVerifiedDevices()
 	hasMFA := len(verifiedDevices) > 0
 
-	if hasMFA {
-		return mfa.HandleMFALogin(logger, s.AuthConfig, &searchUser, verifiedDevices)
-	}
-
-	// Check if MFA is required but not set up for this user
-	if s.AuthConfig.MFARequired {
-		return mfa.GenerateTokensWithMFASetupRequired(logger, s.AuthConfig, &searchUser)
+	// If user has MFA enabled OR MFA is required by admin, return restricted token
+	// Frontend will fetch devices and determine if setup or verification is needed
+	if hasMFA || s.AuthConfig.MFARequired {
+		return mfa.HandleMFARequired(logger, s.AuthConfig, &searchUser)
 	}
 
 	tokens, err := mfa.GenerateTokens(s.AuthConfig, &searchUser)
@@ -162,7 +148,6 @@ func (s AuthService) getMFASecretAndDevice(
 	return secret, targetDevice.ID.String(), targetDevice, nil
 }
 
-// selectMFADevice selects the MFA device for verification.
 func (s AuthService) selectMFADevice(
 	user *models.User,
 	verifiedDevices []models.MFADevice,
@@ -177,7 +162,6 @@ func (s AuthService) selectMFADevice(
 		return nil, apierrors.NewAPIError(404, "MFA_DEVICE_NOT_FOUND")
 	}
 
-	// Use default device or first verified device
 	if device := user.GetDefaultDevice(); device != nil {
 		return device, nil
 	}
@@ -195,8 +179,16 @@ func (s AuthService) Verify(
 	_ uuid.UUIDs,
 	body models.AuthVerifyBody,
 ) (any, error) {
-	data, err := h.ParseAccessToken(s.AuthConfig.JWTSecret, body.AccessToken)
-	return data, err
+	claims, err := h.ParseToken(s.AuthConfig.JWTSecret, body.AccessToken, true)
+	if err != nil {
+		return models.UserClaims{}, errors.New("invalid access token")
+	}
+
+	if claims.Aud != configuration.AudienceAccessToken {
+		return models.UserClaims{}, errors.New("invalid access token audience")
+	}
+
+	return claims, nil
 }
 
 func (s AuthService) Refresh(
@@ -222,7 +214,6 @@ func (s AuthService) Refresh(
 		s.AuthConfig.JWTSecret,
 		&user,
 		refreshToken.Provider,
-		s.AuthConfig.AccessTokenExpiry,
 	)
 	if err != nil {
 		return models.AuthRefreshResponse{}, apierrors.ErrGenerateAccessTokenFailed
@@ -231,22 +222,21 @@ func (s AuthService) Refresh(
 	return models.AuthRefreshResponse{AccessToken: accessToken}, nil
 }
 
-// VerifyMFALogin verifies TOTP code during login and issues access/refresh tokens.
+// VerifyMFALogin verifies TOTP code during login.
+// Token is extracted from Authorization header by middleware.
+// On success, issues full access and refresh tokens.
 func (s AuthService) VerifyMFALogin(
 	logger *zap.Logger,
-	_ models.UserClaims,
+	claims models.UserClaims,
 	_ uuid.UUIDs,
 	body models.MFALoginVerifyBody,
 ) (models.AuthLoginResponse, error) {
-	mfaClaims, err := h.ParseMFAToken(s.AuthConfig.JWTSecret, body.MFAToken)
-	if err != nil {
-		return models.AuthLoginResponse{}, apierrors.NewAPIError(401, "INVALID_MFA_TOKEN")
-	}
+	// Audience validation is handled by middleware via routeAudienceRules
+	// This endpoint accepts both AudienceMFALogin and AudienceMFAReset
 
-	// Load user with verified MFA devices
 	var user models.User
 	result := s.DB.Preload("MFADevices", "is_verified = ?", true).
-		Where("id = ? AND provider_type = ?", mfaClaims.UserID, models.LocalProviderType).
+		Where("id = ? AND provider_type = ?", claims.UserID, models.LocalProviderType).
 		First(&user)
 	if result.RowsAffected == 0 {
 		return models.AuthLoginResponse{}, apierrors.NewAPIError(404, "USER_NOT_FOUND")
@@ -257,10 +247,10 @@ func (s AuthService) VerifyMFALogin(
 		return models.AuthLoginResponse{}, apierrors.NewAPIError(400, "MFA_NOT_ENABLED")
 	}
 
-	// Check MFA rate limiting
 	attempts, err := s.Cache.GetMFAAttempts(user.ID.String())
 	if err != nil {
-		logger.Error("Failed to get MFA attempts", zap.Error(err))
+		logger.Error("Rate limit check failed - denying request", zap.Error(err))
+		return models.AuthLoginResponse{}, apierrors.NewAPIError(503, "SERVICE_UNAVAILABLE")
 	}
 	if attempts >= configuration.MFAMaxAttempts {
 		logger.Warn("MFA rate limit exceeded",
@@ -269,70 +259,40 @@ func (s AuthService) VerifyMFALogin(
 		return models.AuthLoginResponse{}, apierrors.NewAPIError(429, "MFA_RATE_LIMITED")
 	}
 
-	// Get secret and device ID for verification
 	secret, deviceID, targetDevice, err := s.getMFASecretAndDevice(logger, &user, verifiedDevices, body.DeviceID)
 	if err != nil {
 		return models.AuthLoginResponse{}, err
 	}
 
-	// Update last_used_at for device-based verification
 	if targetDevice != nil {
 		s.DB.Model(targetDevice).Update("last_used_at", time.Now())
 	}
 
-	// Validate TOTP code
 	if !h.ValidateTOTPCode(secret, body.Code) {
-		// Increment failed attempts
 		if incErr := s.Cache.IncrementMFAAttempts(user.ID.String()); incErr != nil {
 			logger.Error("Failed to increment MFA attempts", zap.Error(incErr))
 		}
-		logger.Warn("MFA login verification failed",
+		logger.Warn("MFA verification failed",
 			zap.String("user_id", user.ID.String()),
 			zap.String("device_id", deviceID),
 			zap.String("email", user.Email))
 		return models.AuthLoginResponse{}, apierrors.NewAPIError(401, "INVALID_MFA_CODE")
 	}
 
-	// Check replay protection (per device or user for legacy)
-	used, err := s.Cache.IsTOTPCodeUsed(deviceID, body.Code)
+	unused, err := s.Cache.MarkTOTPCodeUsed(deviceID, body.Code)
 	if err != nil {
-		logger.Error("Failed to check TOTP code usage", zap.Error(err))
+		logger.Error("Failed to atomically check/mark TOTP code", zap.Error(err))
 		return models.AuthLoginResponse{}, apierrors.NewAPIError(500, "MFA_VERIFICATION_FAILED")
 	}
-	if used {
+
+	if !unused {
 		logger.Warn("TOTP code replay attempt detected",
 			zap.String("device_id", deviceID))
 		return models.AuthLoginResponse{}, apierrors.NewAPIError(401, "INVALID_MFA_CODE")
 	}
 
-	if err = s.Cache.MarkTOTPCodeUsed(deviceID, body.Code); err != nil {
-		logger.Error("Failed to mark TOTP code as used", zap.Error(err))
-		return models.AuthLoginResponse{}, apierrors.NewAPIError(500, "MFA_VERIFICATION_FAILED")
-	}
-
-	// Reset MFA attempts on successful verification
 	if resetErr := s.Cache.ResetMFAAttempts(user.ID.String()); resetErr != nil {
 		logger.Warn("Failed to reset MFA attempts", zap.Error(resetErr))
-	}
-
-	accessToken, err := h.NewAccessToken(
-		s.AuthConfig.JWTSecret,
-		&user,
-		string(models.LocalProviderType),
-		s.AuthConfig.AccessTokenExpiry,
-	)
-	if err != nil {
-		return models.AuthLoginResponse{}, apierrors.ErrGenerateAccessTokenFailed
-	}
-
-	refreshToken, err := h.NewRefreshToken(
-		s.AuthConfig.JWTSecret,
-		&user,
-		string(models.LocalProviderType),
-		s.AuthConfig.RefreshTokenExpiry,
-	)
-	if err != nil {
-		return models.AuthLoginResponse{}, apierrors.ErrGenerateRefreshTokenFailed
 	}
 
 	logger.Info("MFA login verification successful",
@@ -340,10 +300,29 @@ func (s AuthService) VerifyMFALogin(
 		zap.String("device_id", deviceID),
 		zap.String("email", user.Email))
 
-	return models.AuthLoginResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}, nil
+	// If audience is PasswordReset, return a new restricted token with MFA=true
+	// Do NOT issue full access tokens for password reset flow
+	// Preserve the challenge ID from the original token
+	if claims.Aud == configuration.AudienceMFAReset {
+		var restrictedToken string
+		restrictedToken, err = h.NewRestrictedAccessToken(
+			s.AuthConfig.JWTSecret,
+			&user,
+			configuration.AudienceMFAReset,
+			true,               // Verified!
+			claims.ChallengeID, // Preserve challenge ID
+		)
+		if err != nil {
+			return models.AuthLoginResponse{}, apierrors.NewAPIError(500, "TOKEN_GENERATION_FAILED")
+		}
+
+		return models.AuthLoginResponse{
+			AccessToken: restrictedToken,
+			MFARequired: false, // MFA checks done
+		}, nil
+	}
+
+	return mfa.GenerateTokens(s.AuthConfig, &user)
 }
 
 func (s AuthService) GetProviderList(
@@ -434,7 +413,6 @@ func (s AuthService) OpenIDCallback(
 		s.AuthConfig.JWTSecret,
 		&searchUser,
 		providerKey,
-		s.AuthConfig.AccessTokenExpiry,
 	)
 	if err != nil {
 		logger.Error("Failed to generate access token", zap.Error(err))
@@ -445,7 +423,6 @@ func (s AuthService) OpenIDCallback(
 		s.AuthConfig.JWTSecret,
 		&searchUser,
 		providerKey,
-		s.AuthConfig.RefreshTokenExpiry,
 	)
 	if err != nil {
 		logger.Error("Failed to generate refresh token", zap.Error(err))
@@ -468,208 +445,4 @@ func (s AuthService) OpenIDCallback(
 	}
 
 	return accessToken, refreshToken, nil
-}
-
-func (s AuthService) ValidatePasswordReset(
-	logger *zap.Logger,
-	_ models.UserClaims,
-	ids uuid.UUIDs,
-	body models.PasswordResetValidateBody,
-) (models.AuthLoginResponse, error) {
-	challengeID := ids[0]
-
-	var challenge models.Challenge
-	var user *models.User
-
-	// Use transaction with row-level locking to prevent race conditions
-	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Preload("User").
-			Where("id = ? AND type = ?", challengeID, models.ChallengeTypePasswordReset).
-			First(&challenge)
-
-		if result.RowsAffected == 0 {
-			return apierrors.NewAPIError(404, "CHALLENGE_NOT_FOUND")
-		}
-
-		if challenge.User == nil {
-			logger.Error("Challenge has no associated user")
-			return apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
-		}
-
-		user = challenge.User
-
-		if challenge.ExpiresAt != nil && time.Now().After(*challenge.ExpiresAt) {
-			tx.Delete(&challenge)
-			return apierrors.NewAPIError(410, "CHALLENGE_EXPIRED")
-		}
-
-		match, err := argon2id.ComparePasswordAndHash(
-			strings.ToUpper(body.Code),
-			challenge.HashedSecret,
-		)
-		if err != nil || !match {
-			challenge.AttemptsLeft--
-
-			if challenge.AttemptsLeft <= 0 {
-				logger.Warn("Password reset challenge soft deleted due to too many failed attempts",
-					zap.String("challenge_id", challenge.ID.String()),
-					zap.String("user_id", challenge.UserID.String()),
-					zap.Int("attempts_left", challenge.AttemptsLeft))
-				tx.Delete(&challenge)
-
-				return apierrors.NewAPIError(403, "CHALLENGE_LOCKED")
-			}
-
-			if updateErr := tx.Save(&challenge).Error; updateErr != nil {
-				logger.Error("Failed to update attempts counter", zap.Error(updateErr))
-				return updateErr
-			}
-			return apierrors.NewAPIError(401, "WRONG_CODE")
-		}
-
-		return nil
-	})
-	if err != nil {
-		return models.AuthLoginResponse{}, err
-	}
-	hashedPassword, err := h.CreateHash(body.NewPassword)
-	if err != nil {
-		logger.Error("Failed to hash new password", zap.Error(err))
-		return models.AuthLoginResponse{}, apierrors.NewAPIError(500, "PASSWORD_UPDATE_FAILED")
-	}
-
-	err = s.DB.Transaction(func(tx *gorm.DB) error {
-		updateResult := tx.Model(user).Update("hashed_password", hashedPassword)
-		if updateResult.Error != nil {
-			logger.Error("Failed to update password", zap.Error(updateResult.Error))
-			return apierrors.NewAPIError(500, "PASSWORD_UPDATE_FAILED")
-		}
-
-		deleteResult := tx.Delete(&challenge)
-		if deleteResult.Error != nil {
-			logger.Error("Failed to delete challenge", zap.Error(deleteResult.Error))
-			return apierrors.NewAPIError(500, "CHALLENGE_CLEANUP_FAILED")
-		}
-
-		return nil
-	})
-	if err != nil {
-		return models.AuthLoginResponse{}, err
-	}
-
-	resetDate := time.Now().Format("January 2, 2006 at 3:04 PM MST")
-	successEvent := events.NewPasswordResetSuccess(
-		s.Publisher,
-		user.Email,
-		s.AuthConfig.WebURL,
-		resetDate,
-	)
-	successEvent.Trigger()
-
-	action := models.Activity{
-		Message: activity.PasswordResetCompleted,
-		Object:  user.ToActivity(),
-		Filter: activity.NewLogFilter(map[string]string{
-			"action":       activity.PasswordResetCompleted,
-			"user_id":      user.ID.String(),
-			"challenge_id": challengeID.String(),
-			"object_type":  "user",
-		}),
-	}
-	if logErr := s.ActivityLogger.Send(action); logErr != nil {
-		logger.Error("Failed to log password reset completion", zap.Error(logErr))
-	}
-
-	accessToken, err := h.NewAccessToken(
-		s.AuthConfig.JWTSecret,
-		user,
-		string(models.LocalProviderType),
-		s.AuthConfig.AccessTokenExpiry,
-	)
-	if err != nil {
-		logger.Error("Failed to generate access token", zap.Error(err))
-		return models.AuthLoginResponse{}, apierrors.NewAPIError(
-			500,
-			"GENERATE_ACCESS_TOKEN_FAILED",
-		)
-	}
-
-	refreshToken, err := h.NewRefreshToken(
-		s.AuthConfig.JWTSecret,
-		user,
-		string(models.LocalProviderType),
-		s.AuthConfig.RefreshTokenExpiry,
-	)
-	if err != nil {
-		logger.Error("Failed to generate refresh token", zap.Error(err))
-		return models.AuthLoginResponse{}, apierrors.NewAPIError(
-			500,
-			"GENERATE_REFRESH_TOKEN_FAILED",
-		)
-	}
-
-	return models.AuthLoginResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}, nil
-}
-
-func (s AuthService) RequestPasswordReset(
-	logger *zap.Logger,
-	_ models.UserClaims,
-	_ uuid.UUIDs,
-	body models.PasswordResetRequestBody,
-) (any, error) {
-	var user models.User
-	result := s.DB.Where("email = ? AND provider_type = ?", body.Email, models.LocalProviderType).
-		First(&user)
-
-	if result.RowsAffected == 0 {
-		return nil, nil
-	}
-
-	secret, err := h.GenerateSecret()
-	if err != nil {
-		logger.Error("Failed to generate secret", zap.Error(err))
-		return nil, apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
-	}
-
-	hashedSecret, err := h.CreateHash(secret)
-	if err != nil {
-		logger.Error("Failed to hash secret", zap.Error(err))
-		return nil, apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
-	}
-
-	// Delete any existing password reset challenges for this user
-	s.DB.Where("user_id = ? AND type = ?", user.ID, models.ChallengeTypePasswordReset).
-		Delete(&models.Challenge{})
-
-	// Create a new password reset challenge with configurable expiration
-	expiresAt := time.Now().Add(configuration.SecurityChallengeExpirationMinutes * time.Minute)
-	challenge := models.Challenge{
-		Type:         models.ChallengeTypePasswordReset,
-		UserID:       &user.ID,
-		HashedSecret: hashedSecret,
-		ExpiresAt:    &expiresAt,
-		AttemptsLeft: configuration.SecurityChallengeMaxFailedAttempts,
-	}
-
-	result = s.DB.Create(&challenge)
-	if result.Error != nil {
-		logger.Error("Failed to create challenge", zap.Error(result.Error))
-		return nil, apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
-	}
-
-	// Send password reset email
-	event := events.NewPasswordResetChallenge(
-		s.Publisher,
-		secret,
-		user.Email,
-		challenge.ID.String(),
-		s.AuthConfig.WebURL,
-	)
-	event.Trigger()
-
-	return nil, nil
 }

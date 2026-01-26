@@ -3,12 +3,14 @@ package services
 import (
 	"time"
 
+	"api/internal/activity"
 	"api/internal/cache"
 	"api/internal/configuration"
 	apierrors "api/internal/errors"
 	"api/internal/handlers"
 	h "api/internal/helpers"
 	"api/internal/messaging"
+	"api/internal/mfa"
 	m "api/internal/middlewares"
 	"api/internal/models"
 	"api/internal/notifier"
@@ -21,61 +23,52 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-type UserMFAService struct {
-	DB         *gorm.DB
-	Cache      cache.ICache
-	AuthConfig models.AuthConfig
-	Publisher  messaging.IPublisher
-	Notifier   notifier.INotifier
+type MFAService struct {
+	DB             *gorm.DB
+	Cache          cache.ICache
+	AuthConfig     models.AuthConfig
+	Publisher      messaging.IPublisher
+	Notifier       notifier.INotifier
+	ActivityLogger activity.IActivityLogger
 }
 
-// NewUserMFAService creates a UserMFAService from a UserService.
-func NewUserMFAService(s UserService) UserMFAService {
-	return UserMFAService(s)
-}
-
-func (s UserMFAService) Routes() chi.Router {
+func (s MFAService) Routes() chi.Router {
 	r := chi.NewRouter()
 
 	// Device management routes
+	// Authorization is handled by Authenticate middleware which accepts both
+	// full access tokens (app:*) and restricted tokens (auth:mfa)
+	// User ID is extracted from JWT claims - no need for path parameter
 	r.Route("/devices", func(r chi.Router) {
-		r.Use(m.MFAAuthorize(s.AuthConfig.JWTSecret))
+		r.Get("/", handlers.GetOneHandler(s.ListDevices))
 
-		r.With(m.AuthorizeSelfOrAdmin(0)).
-			Get("/", handlers.GetOneHandler(s.ListDevices))
-
-		r.With(m.AuthorizeSelfOrAdmin(0)).
-			With(m.Validate[models.MFADeviceSetupBody]).
+		r.With(m.Validate[models.MFADeviceSetupBody]).
 			Post("/", handlers.CreateHandler(s.AddDevice))
 
-		r.Route("/{id1}", func(r chi.Router) {
-			r.With(m.AuthorizeSelfOrAdmin(0)).
-				Get("/", handlers.GetOneHandler(s.GetDevice))
+		r.Route("/{id0}", func(r chi.Router) {
+			r.Get("/", handlers.GetOneHandler(s.GetDevice))
 
-			r.With(m.AuthorizeSelfOrAdmin(0)).
-				With(m.Validate[models.MFADeviceUpdateBody]).
+			r.With(m.Validate[models.MFADeviceUpdateBody]).
 				Patch("/", handlers.BodyHandler(s.UpdateDevice))
 
-			r.With(m.AuthorizeSelfOrAdmin(0)).
-				With(m.Validate[models.MFADeviceRemoveBody]).
+			r.With(m.Validate[models.MFADeviceRemoveBody]).
 				Delete("/", handlers.BodyHandler(s.RemoveDevice))
 
-			r.With(m.AuthorizeSelfOrAdmin(0)).
-				With(m.Validate[models.MFADeviceVerifyBody]).
+			r.With(m.Validate[models.MFADeviceVerifyBody]).
 				Post("/verify", handlers.CreateHandler(s.VerifyDevice))
 		})
 	})
 	return r
 }
 
-// ListDevices returns verified MFA devices for a user.
+// ListDevices returns verified MFA devices for the authenticated user.
 // Unverified devices (incomplete setup attempts) are not shown and will be cleaned up by a future expiry process.
-func (s UserMFAService) ListDevices(
+func (s MFAService) ListDevices(
 	_ *zap.Logger,
-	_ models.UserClaims,
-	ids uuid.UUIDs,
+	claims models.UserClaims,
+	_ uuid.UUIDs,
 ) (models.MFADevicesListResponse, error) {
-	userID := ids[0]
+	userID := claims.UserID
 
 	var devices []models.MFADevice
 	result := s.DB.Where("user_id = ? AND is_verified = ?", userID, true).
@@ -86,21 +79,18 @@ func (s UserMFAService) ListDevices(
 	}
 
 	return models.MFADevicesListResponse{
-		Devices:     devices,
-		MFAEnabled:  len(devices) > 0,
-		DeviceCount: len(devices),
-		MaxDevices:  configuration.MaxMFADevicesPerUser,
+		Devices: devices,
 	}, nil
 }
 
-// AddDevice initiates MFA device setup.
-func (s UserMFAService) AddDevice(
+// AddDevice initiates MFA device setup for the authenticated user.
+func (s MFAService) AddDevice(
 	logger *zap.Logger,
 	claims models.UserClaims,
-	ids uuid.UUIDs,
+	_ uuid.UUIDs,
 	body models.MFADeviceSetupBody,
 ) (models.MFADeviceSetupResponse, error) {
-	userID := ids[0]
+	userID := claims.UserID
 
 	// Get user (must be local provider)
 	var user models.User
@@ -110,23 +100,35 @@ func (s UserMFAService) AddDevice(
 	}
 
 	var count int64
-	s.DB.Model(&models.MFADevice{}).Where("user_id = ?", userID).Count(&count)
+	result = s.DB.Model(&models.MFADevice{}).Where("user_id = ?", userID).Count(&count)
+	if result.Error != nil {
+		logger.Error("Failed to count MFA devices", zap.Error(result.Error))
+		return models.MFADeviceSetupResponse{}, result.Error
+	}
 	if count >= int64(configuration.MaxMFADevicesPerUser) {
 		return models.MFADeviceSetupResponse{}, apierrors.NewAPIError(400, "MAX_MFA_DEVICES_REACHED")
 	}
 
-	if claims.Aud == "auth:mfa" {
-		if claims.UserID != user.ID {
-			return models.MFADeviceSetupResponse{}, apierrors.NewAPIError(403, "FORBIDDEN")
-		}
+	// Check if using restricted access token (MFA setup flow)
+	// Note: Authorization is handled by middleware. This check is for business logic:
+	// - Restricted tokens (during login/reset flow) don't require password for first device setup
+	// - Full access tokens require password verification to add devices
+	isRestricted := claims.Aud == configuration.AudienceMFALogin || claims.Aud == configuration.AudienceMFAReset
 
-		// CRITICAL: MFA Token bypass is ONLY allowed for the very first device setup.
+	if isRestricted {
+		// CRITICAL: Restricted token bypass is ONLY allowed for the very first device setup.
 		// If the user already has VERIFIED devices, they MUST use password to add more.
 		// Unverified devices are ignored (incomplete setup attempts that can be retried).
 		var verifiedCount int64
-		s.DB.Model(&models.MFADevice{}).Where("user_id = ? AND is_verified = ?", userID, true).Count(&verifiedCount)
+		result = s.DB.Model(&models.MFADevice{}).
+			Where("user_id = ? AND is_verified = ?", userID, true).
+			Count(&verifiedCount)
+		if result.Error != nil {
+			logger.Error("Failed to count verified MFA devices", zap.Error(result.Error))
+			return models.MFADeviceSetupResponse{}, result.Error
+		}
 		if verifiedCount > 0 {
-			logger.Warn("mfa token used for non-initial device setup",
+			logger.Warn("restricted token used for non-initial device setup",
 				zap.String("userID", claims.UserID.String()),
 				zap.Int64("verifiedDeviceCount", verifiedCount))
 			return models.MFADeviceSetupResponse{}, apierrors.NewAPIError(403, "MFA_SETUP_RESTRICTED")
@@ -180,11 +182,25 @@ func (s UserMFAService) AddDevice(
 		return models.MFADeviceSetupResponse{}, apierrors.NewAPIError(500, "MFA_SETUP_FAILED")
 	}
 
+	// Log activity
+	action := models.Activity{
+		Message: activity.MFADeviceEnrolled,
+		Object:  device.ToActivity(),
+		Filter: activity.NewLogFilter(map[string]string{
+			"action":      activity.MFADeviceEnrolled,
+			"user_id":     userID.String(),
+			"object_type": "mfa_device",
+			"device_id":   device.ID.String(),
+		}),
+	}
+	if logErr := s.ActivityLogger.Send(action); logErr != nil {
+		logger.Error("Failed to log MFA device enrollment activity", zap.Error(logErr))
+	}
+
 	logger.Info("MFA device setup initiated",
 		zap.String("user_id", userID.String()),
 		zap.String("device_id", device.ID.String()),
-		zap.String("device_name", body.Name),
-		zap.String("initiated_by", claims.UserID.String()))
+		zap.String("device_name", body.Name))
 
 	return models.MFADeviceSetupResponse{
 		DeviceID:  device.ID,
@@ -194,14 +210,14 @@ func (s UserMFAService) AddDevice(
 	}, nil
 }
 
-// GetDevice returns a specific MFA device.
-func (s UserMFAService) GetDevice(
+// GetDevice returns a specific MFA device for the authenticated user.
+func (s MFAService) GetDevice(
 	_ *zap.Logger,
-	_ models.UserClaims,
+	claims models.UserClaims,
 	ids uuid.UUIDs,
 ) (models.MFADevice, error) {
-	userID := ids[0]
-	deviceID := ids[1]
+	userID := claims.UserID
+	deviceID := ids[0]
 
 	var device models.MFADevice
 	result := s.DB.Where("id = ? AND user_id = ?", deviceID, userID).First(&device)
@@ -213,16 +229,15 @@ func (s UserMFAService) GetDevice(
 }
 
 // VerifyDevice verifies a TOTP code and enables the device.
-func (s UserMFAService) VerifyDevice(
+func (s MFAService) VerifyDevice(
 	logger *zap.Logger,
 	claims models.UserClaims,
 	ids uuid.UUIDs,
 	body models.MFADeviceVerifyBody,
-) (interface{}, error) {
-	userID := ids[0]
-	deviceID := ids[1]
+) (any, error) {
+	userID := claims.UserID
+	deviceID := ids[0]
 
-	var accessToken, refreshToken string
 	var user models.User
 	var deviceName string
 
@@ -255,10 +270,11 @@ func (s UserMFAService) VerifyDevice(
 			return apierrors.NewAPIError(500, "MFA_VERIFICATION_FAILED")
 		}
 
-		// Check rate limiting
+		// Check rate limiting - fail closed on cache errors
 		attempts, err := s.Cache.GetMFAAttempts(userID.String())
 		if err != nil {
-			logger.Error("Failed to check likely rate limit", zap.Error(err))
+			logger.Error("Rate limit check failed - denying request", zap.Error(err))
+			return apierrors.NewAPIError(503, "SERVICE_UNAVAILABLE")
 		}
 		if attempts >= configuration.MFAMaxAttempts {
 			logger.Warn("MFA device verification rate limited",
@@ -284,20 +300,16 @@ func (s UserMFAService) VerifyDevice(
 		}
 
 		// Check replay protection (per device)
-		used, err := s.Cache.IsTOTPCodeUsed(deviceID.String(), body.Code)
+		// Mark and check for replay protection atomically
+		unused, err := s.Cache.MarkTOTPCodeUsed(deviceID.String(), body.Code)
 		if err != nil {
-			logger.Error("Failed to check TOTP code usage", zap.Error(err))
+			logger.Error("Failed to mark TOTP code as used", zap.Error(err))
 			return apierrors.NewAPIError(500, "MFA_VERIFICATION_FAILED")
 		}
-		if used {
+		if !unused {
 			logger.Warn("TOTP code replay attempt detected",
 				zap.String("device_id", deviceID.String()))
 			return apierrors.NewAPIError(401, "INVALID_MFA_CODE")
-		}
-
-		if err = s.Cache.MarkTOTPCodeUsed(deviceID.String(), body.Code); err != nil {
-			logger.Error("Failed to mark TOTP code as used", zap.Error(err))
-			return apierrors.NewAPIError(500, "MFA_VERIFICATION_FAILED")
 		}
 
 		// Check if there's already a verified default device
@@ -312,7 +324,7 @@ func (s UserMFAService) VerifyDevice(
 
 		// Enable device
 		now := time.Now()
-		if err = tx.Model(&device).Updates(map[string]interface{}{
+		if err = tx.Model(&device).Updates(map[string]any{
 			"is_verified":  true,
 			"is_default":   shouldBeDefault,
 			"verified_at":  now,
@@ -328,25 +340,56 @@ func (s UserMFAService) VerifyDevice(
 		return nil, err
 	}
 
-	// Reload user with MFA devices for token generation
-	s.DB.Preload("MFADevices", "is_verified = ?", true).First(&user, userID)
-	provider := string(user.ProviderType)
-	accessToken, err = h.NewAccessToken(s.AuthConfig.JWTSecret, &user, provider, s.AuthConfig.AccessTokenExpiry)
-	if err != nil {
-		logger.Error("Failed to generate access token", zap.Error(err))
-		return nil, apierrors.NewAPIError(500, "TOKEN_GENERATION_FAILED")
+	// Log activity
+	action := models.Activity{
+		Message: activity.MFADeviceVerified,
+		Object: models.MFADeviceActivity{
+			ID:   deviceID,
+			Name: deviceName,
+		},
+		Filter: activity.NewLogFilter(map[string]string{
+			"action":      activity.MFADeviceVerified,
+			"user_id":     userID.String(),
+			"object_type": "mfa_device",
+			"device_id":   deviceID.String(),
+		}),
+	}
+	if logErr := s.ActivityLogger.Send(action); logErr != nil {
+		logger.Error("Failed to log MFA device verification activity", zap.Error(logErr))
 	}
 
-	refreshToken, err = h.NewRefreshToken(s.AuthConfig.JWTSecret, &user, provider, s.AuthConfig.RefreshTokenExpiry)
-	if err != nil {
-		logger.Error("Failed to generate refresh token", zap.Error(err))
-		return nil, apierrors.NewAPIError(500, "TOKEN_GENERATION_FAILED")
+	// Reload user with MFA devices for token generation
+	s.DB.Preload("MFADevices", "is_verified = ?", true).First(&user, userID)
+
+	// If audience is PasswordReset, return a new restricted token with MFA=true
+	// CRITICAL: Do NOT issue full access tokens for password reset flow
+	if claims.Aud == configuration.AudienceMFAReset {
+		var restrictedToken string
+		restrictedToken, err = h.NewRestrictedAccessToken(
+			s.AuthConfig.JWTSecret,
+			&user,
+			configuration.AudienceMFAReset,
+			true,               // Verified!
+			claims.ChallengeID, // Preserve challenge ID
+		)
+		if err != nil {
+			logger.Error("Failed to generate restricted access token", zap.Error(err))
+			return nil, apierrors.NewAPIError(500, "TOKEN_GENERATION_FAILED")
+		}
+
+		logger.Info("MFA device verified (password reset flow)",
+			zap.String("user_id", userID.String()),
+			zap.String("device_id", deviceID.String()))
+
+		return models.AuthLoginResponse{
+			AccessToken: restrictedToken,
+			MFARequired: false,
+		}, nil
 	}
 
 	logger.Info("MFA device verified and enabled",
 		zap.String("user_id", userID.String()),
-		zap.String("device_id", deviceID.String()),
-		zap.String("verified_by", claims.UserID.String()))
+		zap.String("device_id", deviceID.String()))
 
 	// Send notification email (outside transaction)
 	go func() {
@@ -366,21 +409,18 @@ func (s UserMFAService) VerifyDevice(
 		}
 	}()
 
-	return models.AuthLoginResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}, nil
+	return mfa.GenerateTokens(s.AuthConfig, &user)
 }
 
 // UpdateDevice updates device properties (name, primary status).
-func (s UserMFAService) UpdateDevice(
+func (s MFAService) UpdateDevice(
 	logger *zap.Logger,
 	claims models.UserClaims,
 	ids uuid.UUIDs,
 	body models.MFADeviceUpdateBody,
 ) error {
-	userID := ids[0]
-	deviceID := ids[1]
+	userID := claims.UserID
+	deviceID := ids[0]
 
 	return s.DB.Transaction(func(tx *gorm.DB) error {
 		var user models.User
@@ -397,7 +437,7 @@ func (s UserMFAService) UpdateDevice(
 			return apierrors.NewAPIError(404, "MFA_DEVICE_NOT_FOUND")
 		}
 
-		updates := make(map[string]interface{})
+		updates := make(map[string]any)
 
 		if body.Name != nil {
 			// Check for duplicate name
@@ -427,24 +467,38 @@ func (s UserMFAService) UpdateDevice(
 			}
 		}
 
+		// Log activity
+		action := models.Activity{
+			Message: activity.MFADeviceUpdated,
+			Object:  device.ToActivity(),
+			Filter: activity.NewLogFilter(map[string]string{
+				"action":      activity.MFADeviceUpdated,
+				"user_id":     userID.String(),
+				"object_type": "mfa_device",
+				"device_id":   deviceID.String(),
+			}),
+		}
+		if logErr := s.ActivityLogger.Send(action); logErr != nil {
+			logger.Error("Failed to log MFA device update activity", zap.Error(logErr))
+		}
+
 		logger.Info("MFA device updated",
 			zap.String("user_id", userID.String()),
-			zap.String("device_id", deviceID.String()),
-			zap.String("updated_by", claims.UserID.String()))
+			zap.String("device_id", deviceID.String()))
 
 		return nil
 	})
 }
 
 // RemoveDevice removes an MFA device after verifying user password.
-func (s UserMFAService) RemoveDevice(
+func (s MFAService) RemoveDevice(
 	logger *zap.Logger,
 	claims models.UserClaims,
 	ids uuid.UUIDs,
 	body models.MFADeviceRemoveBody,
 ) error {
-	userID := ids[0]
-	deviceID := ids[1]
+	userID := claims.UserID
+	deviceID := ids[0]
 
 	var user models.User
 	var deviceName string
@@ -500,10 +554,24 @@ func (s UserMFAService) RemoveDevice(
 			}
 		}
 
+		// Log activity
+		action := models.Activity{
+			Message: activity.MFADeviceRemoved,
+			Object:  device.ToActivity(),
+			Filter: activity.NewLogFilter(map[string]string{
+				"action":      activity.MFADeviceRemoved,
+				"user_id":     userID.String(),
+				"object_type": "mfa_device",
+				"device_id":   deviceID.String(),
+			}),
+		}
+		if logErr := s.ActivityLogger.Send(action); logErr != nil {
+			logger.Error("Failed to log MFA device removal activity", zap.Error(logErr))
+		}
+
 		logger.Info("MFA device removed",
 			zap.String("user_id", userID.String()),
-			zap.String("device_id", deviceID.String()),
-			zap.String("removed_by", claims.UserID.String()))
+			zap.String("device_id", deviceID.String()))
 
 		return nil
 	})

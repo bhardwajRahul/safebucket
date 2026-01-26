@@ -1,31 +1,21 @@
-import { useState } from "react";
-
-import { CheckCircle, Shield } from "lucide-react";
-import { useNavigate } from "@tanstack/react-router";
-import { useForm } from "react-hook-form";
+import { CheckCircle, Shield, Smartphone } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { usePasswordResetFlow } from "./hooks/usePasswordResetFlow";
 import type { FC } from "react";
 
-import type { IPasswordResetValidateFormData } from "@/components/auth-view/helpers/types.ts";
 import { FormErrorAlert } from "@/components/common/FormErrorAlert";
-import { api_validatePasswordReset } from "@/components/auth-view/helpers/api.ts";
-import { authCookies } from "@/lib/auth-service";
-import { useRefreshSession } from "@/hooks/useAuth";
-import { Button } from "@/components/ui/button.tsx";
+import { MFADeviceSelector } from "@/components/mfa-view/components/MFADeviceSelector";
+import { MFAVerifyInput } from "@/components/mfa-view/components/MFAVerifyInput";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import {
-  InputOTP,
-  InputOTPGroup,
-  InputOTPSlot,
-} from "@/components/ui/input-otp.tsx";
-import { Label } from "@/components/ui/label.tsx";
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 export interface IPasswordResetValidateFormProps {
   challengeId: string;
@@ -35,60 +25,25 @@ export const PasswordResetValidateForm: FC<IPasswordResetValidateFormProps> = ({
   challengeId,
 }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
-  const refreshSession = useRefreshSession();
-  const [isValidated, setIsValidated] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [code, setCode] = useState("");
 
   const {
-    register,
-    handleSubmit,
-    watch,
-    formState: { errors, isSubmitting },
-  } = useForm<IPasswordResetValidateFormData>();
+    stage,
+    error,
+    isLoading,
+    code,
+    setCode,
+    handleCodeSubmit,
+    mfaDevices,
+    mfaCode,
+    setMfaCode,
+    selectedDeviceId,
+    setSelectedDeviceId,
+    handleMFASubmit,
+    passwordForm,
+    handlePasswordSubmit,
+  } = usePasswordResetFlow({ challengeId });
 
-  const newPassword = watch("newPassword");
-
-  const handleFormSubmit = async (data: IPasswordResetValidateFormData) => {
-    setError(null);
-
-    if (code.length !== 6) {
-      setError(t("auth.password_reset.validate.error_code_length"));
-      return;
-    }
-
-    if (data.newPassword !== data.confirmPassword) {
-      setError(t("auth.password_reset.validate.error_password_mismatch"));
-      return;
-    }
-
-    try {
-      const response = await api_validatePasswordReset(challengeId, {
-        code,
-        new_password: data.newPassword,
-      });
-
-      // Set authentication state via auth service
-      authCookies.setAll(
-        response.access_token,
-        response.refresh_token,
-        "local",
-      );
-
-      setIsValidated(true);
-
-      // Navigate to home after a short delay
-      setTimeout(() => {
-        refreshSession();
-        navigate({ to: "/" });
-      }, 2000);
-    } catch {
-      setError(t("auth.password_reset.validate.error_validation_failed"));
-    }
-  };
-
-  if (isValidated) {
+  if (stage === "success") {
     return (
       <Card className="mx-auto w-full max-w-md">
         <CardContent className="pt-6">
@@ -106,110 +61,187 @@ export const PasswordResetValidateForm: FC<IPasswordResetValidateFormProps> = ({
     );
   }
 
+  if (stage === "mfa") {
+    return (
+      <Card className="mx-auto w-full max-w-md">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-blue-100 p-3">
+            <Smartphone className="h-6 w-6 text-blue-600" />
+          </div>
+          <CardTitle>{t("auth.password_reset.mfa.title")}</CardTitle>
+          <CardDescription>
+            {t("auth.password_reset.mfa.subtitle")}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleMFASubmit} className="space-y-4">
+            <FormErrorAlert error={error} />
+
+            {mfaDevices.length > 1 && (
+              <MFADeviceSelector
+                devices={mfaDevices}
+                selectedDeviceId={selectedDeviceId}
+                onSelectDevice={setSelectedDeviceId}
+                disabled={isLoading}
+              />
+            )}
+
+            <div className="space-y-2">
+              <p className="text-muted-foreground text-center text-sm">
+                {t("auth.mfa.code_instruction")}
+              </p>
+              <MFAVerifyInput
+                value={mfaCode}
+                onChange={setMfaCode}
+                disabled={isLoading}
+              />
+            </div>
+
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={isLoading || mfaCode.length !== 6}
+            >
+              {isLoading
+                ? t("auth.mfa.verifying")
+                : t("auth.mfa.verify_button")}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (stage === "password") {
+    return (
+      <Card className="mx-auto w-full max-w-md">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-green-100 p-3">
+            <Shield className="h-6 w-6 text-green-600" />
+          </div>
+          <CardTitle>{t("auth.password_reset.password.title")}</CardTitle>
+          <CardDescription>
+            {t("auth.password_reset.password.subtitle")}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form
+            onSubmit={passwordForm.handleSubmit(handlePasswordSubmit)}
+            className="space-y-4"
+          >
+            <FormErrorAlert error={error} />
+
+            <div className="space-y-2">
+              <Label htmlFor="newPassword">
+                {t("auth.password_reset.validate.new_password_label")}
+              </Label>
+              <Input
+                id="newPassword"
+                type="password"
+                placeholder={t(
+                  "auth.password_reset.validate.new_password_placeholder",
+                )}
+                {...passwordForm.register("newPassword", {
+                  required: t(
+                    "auth.password_reset.validate.error_new_password_required",
+                  ),
+                  minLength: {
+                    value: 8,
+                    message: t(
+                      "auth.password_reset.validate.error_new_password_min_length",
+                    ),
+                  },
+                })}
+                className={
+                  passwordForm.errors.newPassword ? "border-red-500" : ""
+                }
+                disabled={isLoading}
+              />
+              {passwordForm.errors.newPassword && (
+                <p className="text-sm text-red-500">
+                  {passwordForm.errors.newPassword.message}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">
+                {t("auth.password_reset.validate.confirm_password_label")}
+              </Label>
+              <Input
+                id="confirmPassword"
+                type="password"
+                placeholder={t(
+                  "auth.password_reset.validate.confirm_password_placeholder",
+                )}
+                {...passwordForm.register("confirmPassword", {
+                  required: t(
+                    "auth.password_reset.validate.error_confirm_password_required",
+                  ),
+                  validate: (value) =>
+                    value === passwordForm.newPassword ||
+                    t(
+                      "auth.password_reset.validate.error_confirm_password_mismatch",
+                    ),
+                })}
+                className={
+                  passwordForm.errors.confirmPassword ? "border-red-500" : ""
+                }
+                disabled={isLoading}
+              />
+              {passwordForm.errors.confirmPassword && (
+                <p className="text-sm text-red-500">
+                  {passwordForm.errors.confirmPassword.message}
+                </p>
+              )}
+            </div>
+
+            <Button type="submit" className="w-full" disabled={isLoading}>
+              {isLoading
+                ? t("auth.password_reset.validate.resetting")
+                : t("auth.password_reset.validate.reset_button")}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="mx-auto w-full max-w-md">
       <CardHeader className="text-center">
         <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-red-100 p-3">
           <Shield className="h-6 w-6 text-red-600" />
         </div>
-        <CardTitle>{t("auth.password_reset.validate.title")}</CardTitle>
+        <CardTitle>{t("auth.password_reset.code.title")}</CardTitle>
         <CardDescription>
-          {t("auth.password_reset.validate.subtitle")}
+          {t("auth.password_reset.code.subtitle")}
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-4">
+        <form onSubmit={handleCodeSubmit} className="space-y-4">
           <FormErrorAlert error={error} />
 
           <div className="space-y-2">
             <Label className="flex justify-center" htmlFor="code">
               {t("auth.password_reset.validate.code_label")}
             </Label>
-            <div className="flex justify-center">
-              <InputOTP
-                maxLength={6}
-                value={code}
-                onChange={(value) => setCode(value)}
-              >
-                <InputOTPGroup>
-                  <InputOTPSlot index={0} />
-                  <InputOTPSlot index={1} />
-                  <InputOTPSlot index={2} />
-                  <InputOTPSlot index={3} />
-                  <InputOTPSlot index={4} />
-                  <InputOTPSlot index={5} />
-                </InputOTPGroup>
-              </InputOTP>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="newPassword">
-              {t("auth.password_reset.validate.new_password_label")}
-            </Label>
-            <Input
-              id="newPassword"
-              type="password"
-              placeholder={t(
-                "auth.password_reset.validate.new_password_placeholder",
-              )}
-              {...register("newPassword", {
-                required: t(
-                  "auth.password_reset.validate.error_new_password_required",
-                ),
-                minLength: {
-                  value: 8,
-                  message: t(
-                    "auth.password_reset.validate.error_new_password_min_length",
-                  ),
-                },
-              })}
-              className={errors.newPassword ? "border-red-500" : ""}
+            <MFAVerifyInput
+              value={code}
+              onChange={setCode}
+              disabled={isLoading}
+              uppercase
             />
-            {errors.newPassword && (
-              <p className="text-sm text-red-500">
-                {errors.newPassword.message}
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="confirmPassword">
-              {t("auth.password_reset.validate.confirm_password_label")}
-            </Label>
-            <Input
-              id="confirmPassword"
-              type="password"
-              placeholder={t(
-                "auth.password_reset.validate.confirm_password_placeholder",
-              )}
-              {...register("confirmPassword", {
-                required: t(
-                  "auth.password_reset.validate.error_confirm_password_required",
-                ),
-                validate: (value) =>
-                  value === newPassword ||
-                  t(
-                    "auth.password_reset.validate.error_confirm_password_mismatch",
-                  ),
-              })}
-              className={errors.confirmPassword ? "border-red-500" : ""}
-            />
-            {errors.confirmPassword && (
-              <p className="text-sm text-red-500">
-                {errors.confirmPassword.message}
-              </p>
-            )}
           </div>
 
           <Button
             type="submit"
             className="w-full"
-            disabled={isSubmitting || code.length !== 6}
+            disabled={isLoading || code.length !== 6}
           >
-            {isSubmitting
-              ? t("auth.password_reset.validate.resetting")
-              : t("auth.password_reset.validate.reset_button")}
+            {isLoading
+              ? t("auth.password_reset.code.verifying")
+              : t("auth.password_reset.code.verify_button")}
           </Button>
 
           <p className="text-muted-foreground mt-3 text-center text-xs">
