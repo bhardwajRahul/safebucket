@@ -62,10 +62,20 @@ func (r *RueidisCache) DeleteInactivePlatform() error {
 }
 
 func (r *RueidisCache) StartIdentityTicker(id string) {
+	err := r.RegisterPlatform(id)
+	if err != nil {
+		zap.L().Fatal("Failed to register platform", zap.String("platform", id), zap.Error(err))
+	}
+
+	err = r.DeleteInactivePlatform()
+	if err != nil {
+		zap.L().Fatal("Failed to delete platform", zap.String("platform", id), zap.Error(err))
+	}
+
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		err := r.RegisterPlatform(id)
+		err = r.RegisterPlatform(id)
 		if err != nil {
 			zap.L().Fatal("App identity ticker crashed", zap.Error(err))
 		}
@@ -103,6 +113,48 @@ func (r *RueidisCache) GetRateLimit(userIdentifier string, requestsPerMinute int
 	}
 
 	return 0, nil
+}
+
+// TryAcquireLock attempts to acquire a distributed lock using SET NX EX.
+// Returns true if lock was acquired, false if already held by another instance.
+func (r *RueidisCache) TryAcquireLock(key string, instanceID string, ttlSeconds int) (bool, error) {
+	ctx := context.Background()
+	err := r.client.Do(ctx,
+		r.client.B().Set().Key(key).Value(instanceID).Nx().Ex(time.Duration(ttlSeconds)*time.Second).Build(),
+	).Error()
+
+	if err != nil {
+		if rueidis.IsRedisNil(err) {
+			// Key already exists, lock not acquired
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// RefreshLock extends the TTL of an existing lock if held by this instance.
+// Returns true if refresh succeeded, false if lock is no longer held.
+func (r *RueidisCache) RefreshLock(key string, instanceID string, ttlSeconds int) (bool, error) {
+	ctx := context.Background()
+	current, err := r.client.Do(ctx, r.client.B().Getex().Key(key).ExSeconds(int64(ttlSeconds)).Build()).ToString()
+
+	if err != nil {
+		if rueidis.IsRedisNil(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if current != instanceID {
+		return false, nil
+	}
+
+	err = r.client.Do(ctx,
+		r.client.B().Expire().Key(key).Seconds(int64(ttlSeconds)).Build(),
+	).Error()
+
+	return err == nil, err
 }
 
 func (r *RueidisCache) Close() error {

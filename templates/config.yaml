@@ -1,3 +1,8 @@
+# Profile determines which components run
+# Options: default, api, worker
+# Default: default (all components enabled)
+profile: default
+
 app:
   log_level: info
   api_url: http://localhost:8080

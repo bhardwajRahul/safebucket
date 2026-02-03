@@ -1,6 +1,7 @@
 package models
 
 type Configuration struct {
+	Profile  string                `mapstructure:"profile"  validate:"oneof=default api worker" default:"default"`
 	App      AppConfiguration      `mapstructure:"app"      validate:"required"`
 	Database DatabaseConfiguration `mapstructure:"database" validate:"required"`
 	Auth     AuthConfiguration     `mapstructure:"auth"     validate:"required"`
