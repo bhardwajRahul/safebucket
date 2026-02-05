@@ -16,9 +16,11 @@ func NewStorage(config models.StorageConfiguration, trashRetentionDays int) stor
 	case ProviderGCP:
 		store = storage.NewGCPStorage(config.CloudStorage.BucketName)
 	case ProviderAWS:
-		store = storage.NewAWSStorage(config.S3.BucketName)
+		store = storage.NewAWSStorage(config.AWS.BucketName)
 	case ProviderRustFS:
 		store = storage.NewRustFSStorage(config.RustFS, config.RustFS.BucketName)
+	case ProviderS3:
+		store = storage.NewGenericS3Storage(config.S3, config.S3.BucketName)
 	default:
 		return nil
 	}

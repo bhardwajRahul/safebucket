@@ -37,8 +37,9 @@ func NewAWSStorage(bucketName string) IStorage {
 		Bucket: aws.String(bucketName),
 	})
 	if err != nil {
-		zap.L().
-			Error("Failed to retrieve bucket.", zap.String("bucketName", bucketName), zap.Error(err))
+		zap.L().Fatal("Failed to connect to storage or bucket does not exist",
+			zap.String("bucketName", bucketName),
+			zap.Error(err))
 	}
 
 	presigner := s3.NewPresignClient(client)
@@ -59,7 +60,7 @@ func (a AWSStorage) PresignedGetObject(path string) (string, error) {
 	resp, err := a.presigner.PresignGetObject(
 		context.Background(),
 		req,
-		s3.WithPresignExpires(15*time.Minute),
+		s3.WithPresignExpires(c.UploadPolicyExpirationInMinutes*time.Minute),
 	)
 	if err != nil {
 		return "", err
@@ -193,74 +194,6 @@ func (a AWSStorage) RemoveObjects(paths []string) error {
 	return nil
 }
 
-func (a AWSStorage) SetObjectTags(path string, tagMap map[string]string) error {
-	var tagSet []types.Tag
-	for key, value := range tagMap {
-		tagSet = append(tagSet, types.Tag{
-			Key:   aws.String(key),
-			Value: aws.String(value),
-		})
-	}
-
-	_, err := a.storage.PutObjectTagging(context.Background(), &s3.PutObjectTaggingInput{
-		Bucket: aws.String(a.BucketName),
-		Key:    aws.String(path),
-		Tagging: &types.Tagging{
-			TagSet: tagSet,
-		},
-	})
-	return err
-}
-
-func (a AWSStorage) GetObjectTags(path string) (map[string]string, error) {
-	tagsOutput, err := a.storage.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
-		Bucket: aws.String(a.BucketName),
-		Key:    aws.String(path),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	tagMap := make(map[string]string)
-	for _, tag := range tagsOutput.TagSet {
-		if tag.Key != nil && tag.Value != nil {
-			tagMap[*tag.Key] = *tag.Value
-		}
-	}
-	return tagMap, nil
-}
-
-func (a AWSStorage) RemoveObjectTags(path string, tagsToRemove []string) error {
-	tagsOutput, err := a.storage.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
-		Bucket: aws.String(a.BucketName),
-		Key:    aws.String(path),
-	})
-	if err != nil {
-		return err
-	}
-
-	removeSet := make(map[string]bool)
-	for _, key := range tagsToRemove {
-		removeSet[key] = true
-	}
-
-	var filteredTags []types.Tag
-	for _, tag := range tagsOutput.TagSet {
-		if tag.Key != nil && !removeSet[*tag.Key] {
-			filteredTags = append(filteredTags, tag)
-		}
-	}
-
-	_, err = a.storage.PutObjectTagging(context.Background(), &s3.PutObjectTaggingInput{
-		Bucket: aws.String(a.BucketName),
-		Key:    aws.String(path),
-		Tagging: &types.Tagging{
-			TagSet: filteredTags,
-		},
-	})
-	return err
-}
-
 // IsTrashMarkerPath checks if a deletion event is for a trash marker.
 // Patterns:
 //   - trash/{bucket-id}/files/{file-id} -> buckets/{bucket-id}/{file-id}
@@ -270,7 +203,6 @@ func (a AWSStorage) IsTrashMarkerPath(path string) (bool, string) {
 		return false, ""
 	}
 
-	// Remove "trash/" prefix
 	remainder := strings.TrimPrefix(path, trashPrefix)
 	parts := strings.SplitN(remainder, "/", 3)
 
@@ -279,22 +211,19 @@ func (a AWSStorage) IsTrashMarkerPath(path string) (bool, string) {
 	}
 
 	bucketID := parts[0]
-	resourceType := parts[1] // "files" or "folders"
+	resourceType := parts[1]
 	resourceID := parts[2]
 
-	// Validate rsource type
 	if resourceType != "files" && resourceType != "folders" {
 		return false, ""
 	}
 
-	// Reconstruct original path: buckets/{bucket-id}/{resource-id}
 	originalPath := bucketsPrefix + bucketID + "/" + resourceID
 	return true, originalPath
 }
 
 // getTrashMarkerPath converts buckets/{bucket-id}/{id} to trash/{bucket-id}/files|folders/{id}.
 func (a AWSStorage) getTrashMarkerPath(objectPath string, model interface{}) string {
-	// Remove "buckets/" prefix
 	remainder := strings.TrimPrefix(objectPath, bucketsPrefix)
 
 	var resourceType string

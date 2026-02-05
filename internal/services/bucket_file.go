@@ -141,14 +141,84 @@ func (s BucketFileService) PatchFile(
 ) error {
 	bucketID, fileID := ids[0], ids[1]
 
+	var file models.File
+	result := s.DB.Unscoped().
+		Where("id = ? AND bucket_id = ?", fileID, bucketID).
+		Find(&file)
+	if result.Error != nil {
+		return apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
+	}
+	if result.RowsAffected == 0 {
+		return apierrors.NewAPIError(404, "FILE_NOT_FOUND")
+	}
+
 	switch body.Status {
 	case string(models.FileStatusDeleted):
-		return s.TrashFile(logger, user, bucketID, fileID)
+		return s.TrashFile(logger, user, file)
 	case string(models.FileStatusUploaded):
-		return s.RestoreFile(logger, user, bucketID, fileID)
+		if file.DeletedAt.Valid {
+			return s.RestoreFile(logger, user, file)
+		}
+		return s.HandleUploadedStatus(logger, user, file)
 	default:
 		return apierrors.NewAPIError(400, "INVALID_STATUS")
 	}
+}
+
+// HandleUploadedStatus confirms a file upload by transitioning from "uploading" to "uploaded".
+// This is required for S3 providers that don't support bucket notifications.
+// The client must call this after completing the upload via the presigned URL.
+func (s BucketFileService) HandleUploadedStatus(
+	logger *zap.Logger,
+	user models.UserClaims,
+	file models.File,
+) error {
+	return s.DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND bucket_id = ?", file.ID, file.BucketID).
+			First(&file)
+
+		if result.Error != nil {
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return apierrors.NewAPIError(404, "FILE_NOT_FOUND")
+			}
+			return apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
+		}
+
+		if file.Status != models.FileStatusUploading {
+			return apierrors.NewAPIError(409, "INVALID_FILE_STATUS_TRANSITION")
+		}
+
+		objectPath := path.Join("buckets", file.BucketID.String(), file.ID.String())
+		if _, err := s.Storage.StatObject(objectPath); err != nil {
+			logger.Error("File not found in storage",
+				zap.Error(err),
+				zap.String("path", objectPath),
+				zap.String("file_id", file.ID.String()))
+			return apierrors.NewAPIError(404, "FILE_NOT_IN_STORAGE")
+		}
+
+		if err := tx.Model(&file).Update("status", models.FileStatusUploaded).Error; err != nil {
+			logger.Error("Failed to update file status", zap.Error(err))
+			return apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
+		}
+
+		if err := s.ActivityLogger.Send(models.Activity{
+			Message: activity.FileUploaded,
+			Object:  file.ToActivity(),
+			Filter: activity.NewLogFilter(map[string]string{
+				"action":      rbac.ActionCreate.String(),
+				"bucket_id":   file.BucketID.String(),
+				"file_id":     file.ID.String(),
+				"object_type": rbac.ResourceFile.String(),
+				"user_id":     user.UserID.String(),
+			}),
+		}); err != nil {
+			logger.Warn("Failed to log upload activity", zap.Error(err))
+		}
+
+		return nil
+	})
 }
 
 // DeleteFile handles DELETE requests for permanent file deletion (purge).
@@ -215,13 +285,11 @@ func (s BucketFileService) DownloadFile(
 func (s BucketFileService) TrashFile(
 	logger *zap.Logger,
 	user models.UserClaims,
-	bucketID uuid.UUID,
-	fileID uuid.UUID,
+	file models.File,
 ) error {
 	return s.DB.Transaction(func(tx *gorm.DB) error {
-		var file models.File
 		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND bucket_id = ?", fileID, bucketID).
+			Where("id = ? AND bucket_id = ?", file.ID, file.BucketID).
 			First(&file)
 
 		if result.Error != nil {
@@ -314,15 +382,14 @@ func (s BucketFileService) unmarkRestoredFolders(logger *zap.Logger, folders []m
 func (s BucketFileService) RestoreFile(
 	logger *zap.Logger,
 	user models.UserClaims,
-	bucketID, fileID uuid.UUID,
+	file models.File,
 ) error {
 	var restoredFolders []models.Folder
 	var restoredFile models.File
 
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		var file models.File
 		result := tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND bucket_id = ? AND deleted_at IS NOT NULL", fileID, bucketID).
+			Where("id = ? AND bucket_id = ? AND deleted_at IS NOT NULL", file.ID, file.BucketID).
 			First(&file)
 
 		if result.Error != nil {
@@ -337,7 +404,7 @@ func (s BucketFileService) RestoreFile(
 			return apierrors.NewAPIError(409, "FILE_RESTORE_IN_PROGRESS")
 		}
 
-		folders, err := s.restoreParentFolders(tx, logger, file.FolderID, bucketID)
+		folders, err := s.restoreParentFolders(tx, logger, file.FolderID, file.BucketID)
 		if err != nil {
 			return err
 		}
@@ -417,7 +484,6 @@ func (s BucketFileService) PurgeFile(
 	bucketID, fileID uuid.UUID,
 ) error {
 	return s.DB.Transaction(func(tx *gorm.DB) error {
-		// Fetch file inside transaction with row lock (use Unscoped to query soft-deleted files)
 		var file models.File
 		result := tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND bucket_id = ?", fileID, bucketID).
@@ -431,31 +497,24 @@ func (s BucketFileService) PurgeFile(
 			return apierrors.NewAPIError(500, "FETCH_FAILED")
 		}
 
-		// Only allow purging soft-deleted files (in trash)
 		if !file.DeletedAt.Valid {
 			return apierrors.NewAPIError(409, "FILE_NOT_IN_TRASH")
 		}
 
-		// Use new path structure: buckets/{bucket_id}/{file_id}
 		objectPath := path.Join("buckets", file.BucketID.String(), file.ID.String())
 
-		// Delete the trash marker first
 		if err := s.Storage.UnmarkAsTrashed(objectPath, file); err != nil {
 			logger.Warn("Failed to delete trash marker",
 				zap.Error(err),
 				zap.String("path", objectPath))
-			// Continue - marker might have been already deleted by lifecycle policy
 		}
 
-		// Delete the original file from storage
 		if err := s.Storage.RemoveObject(objectPath); err != nil {
 			logger.Warn("Failed to delete file from storage",
 				zap.Error(err),
 				zap.String("path", objectPath))
-			// Continue to database deletion even if storage fails
 		}
 
-		// Hard delete from database (permanent removal)
 		if err := tx.Unscoped().Delete(&file).Error; err != nil {
 			logger.Error("Failed to hard delete file from database", zap.Error(err))
 			return apierrors.ErrDeleteFailed
