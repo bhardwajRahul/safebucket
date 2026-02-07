@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"api/internal/activity"
+	"api/internal/eventparser"
 	"api/internal/messaging"
 	"api/internal/models"
 	"api/internal/notifier"
@@ -90,7 +91,7 @@ func HandleEvents(params *EventParams, messages <-chan *message.Message) {
 }
 
 func HandleBucketEvents(
-	subscriber messaging.ISubscriber,
+	parser eventparser.IBucketEventParser,
 	db *gorm.DB,
 	activityLogger activity.IActivityLogger,
 	storage storage.IStorage,
@@ -101,11 +102,11 @@ func HandleBucketEvents(
 		zap.L().
 			Debug("message received", zap.Any("raw_payload", string(msg.Payload)), zap.Any("metadata", msg.Metadata))
 
-		eventType := subscriber.GetBucketEventType(msg)
+		eventType := parser.GetBucketEventType(msg)
 
 		switch eventType {
-		case messaging.BucketEventTypeUpload:
-			uploadEvents := subscriber.ParseBucketUploadEvents(msg)
+		case eventparser.BucketEventTypeUpload:
+			uploadEvents := parser.ParseBucketUploadEvents(msg)
 
 			for _, event := range uploadEvents {
 				bucketUUID, err := uuid.Parse(event.BucketID)
@@ -147,8 +148,8 @@ func HandleBucketEvents(
 				}
 			}
 
-		case messaging.BucketEventTypeDeletion:
-			deletionEvents := subscriber.ParseBucketDeletionEvents(msg, storage.GetBucketName())
+		case eventparser.BucketEventTypeDeletion:
+			deletionEvents := parser.ParseBucketDeletionEvents(msg, storage.GetBucketName())
 
 			for _, event := range deletionEvents {
 				bucketUUID, err := uuid.Parse(event.BucketID)
@@ -171,7 +172,7 @@ func HandleBucketEvents(
 				}
 			}
 
-		case messaging.BucketEventTypeIgnore:
+		case eventparser.BucketEventTypeIgnore:
 			zap.L().Debug("ignoring event", zap.String("raw_payload", string(msg.Payload)))
 
 		default:

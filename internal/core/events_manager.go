@@ -1,6 +1,8 @@
 package core
 
 import (
+	"api/internal/configuration"
+	"api/internal/eventparser"
 	"api/internal/messaging"
 	"api/internal/models"
 	"api/internal/storage"
@@ -13,14 +15,16 @@ type EventsManager struct {
 	subscribers map[string]messaging.ISubscriber
 	config      models.EventsConfiguration
 	storage     storage.IStorage
+	parser      eventparser.IBucketEventParser
 }
 
-func NewEventsManager(config models.EventsConfiguration, storage storage.IStorage) *EventsManager {
+func NewEventsManager(config models.EventsConfiguration, storageType string, storage storage.IStorage) *EventsManager {
 	manager := &EventsManager{
 		publishers:  make(map[string]messaging.IPublisher),
 		subscribers: make(map[string]messaging.ISubscriber),
 		config:      config,
 		storage:     storage,
+		parser:      eventparser.NewBucketEventParser(storageType, storage),
 	}
 
 	manager.initializePublishers()
@@ -34,17 +38,17 @@ func (em *EventsManager) initializePublishers() {
 		var publisher messaging.IPublisher
 
 		switch em.config.Type {
-		case ProviderJetstream:
+		case configuration.ProviderJetstream:
 			publisher = messaging.NewJetStreamPublisher(&models.JetStreamEventsConfig{
 				Host: em.config.Jetstream.Host,
 				Port: em.config.Jetstream.Port,
 			}, topicConfig.Name)
-		case ProviderGCP:
+		case configuration.ProviderGCP:
 			publisher = messaging.NewGCPPublisher(&models.PubSubConfiguration{
 				ProjectID:          em.config.PubSub.ProjectID,
 				SubscriptionSuffix: em.config.PubSub.SubscriptionSuffix,
 			}, topicConfig.Name)
-		case ProviderAWS:
+		case configuration.ProviderAWS:
 			publisher = messaging.NewAWSPublisher(topicConfig.Name)
 		}
 
@@ -62,18 +66,18 @@ func (em *EventsManager) initializeSubscribers() {
 		var subscriber messaging.ISubscriber
 
 		switch em.config.Type {
-		case ProviderJetstream:
+		case configuration.ProviderJetstream:
 			subscriber = messaging.NewJetStreamSubscriber(&models.JetStreamEventsConfig{
 				Host: em.config.Jetstream.Host,
 				Port: em.config.Jetstream.Port,
 			}, topicConfig.Name)
-		case ProviderGCP:
+		case configuration.ProviderGCP:
 			subscriber = messaging.NewGCPSubscriber(&models.PubSubConfiguration{
 				ProjectID:          em.config.PubSub.ProjectID,
 				SubscriptionSuffix: em.config.PubSub.SubscriptionSuffix,
 			}, topicConfig.Name)
-		case ProviderAWS:
-			subscriber = messaging.NewAWSSubscriber(topicConfig.Name, em.storage)
+		case configuration.ProviderAWS:
+			subscriber = messaging.NewAWSSubscriber(topicConfig.Name)
 		}
 
 		if subscriber != nil {
