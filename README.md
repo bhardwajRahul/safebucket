@@ -6,7 +6,8 @@
 
 Safebucket is an open-source secure file sharing platform designed to share files in an easy and secure way, integrating
 with different cloud providers. Built for individuals and organizations that need to collaborate on files with robust
-security, flexible access controls, and seamless multi-cloud support across AWS S3, Google Cloud Storage, RustFS and MinIO.
+security, flexible access controls, and seamless multi-cloud support across any S3-compatible provider (including AWS
+S3, Google Cloud Storage and [more](https://docs.safebucket.io/docs/configuration/storage-providers)).
 
 ![SafeBucket Homepage](./assets/homepage.png)
 
@@ -24,8 +25,10 @@ existing corporate identities.
 - 🔐 **SSO Integration**: Single sign-on with any/multiple auth providers and manage their sharing capabilities
 - 📧 **User Invitation System**: Invite external collaborators via email
 - 📊 **Real-Time Activity Tracking**: Monitor file sharing activity with comprehensive audit trails
-- ☁️ **Multi-Storage Integration**: Store and share files across AWS S3, GCP Cloud Storage, RustFS or MinIO
+- ☁️ **Multi-Storage Integration**: Store and share files across any S3-compatible provider (including AWS S3, Google
+  Cloud Storage and [more](https://docs.safebucket.io/docs/configuration/storage-providers))
 - 🚀 **Highly Scalable**: Event-driven and cloud native architecture for high-performance operations
+
 ## Architecture
 
 ![SafeBucket HLD](./assets/hld.png)
