@@ -34,7 +34,7 @@ export const authCookies = {
 
   setAccessToken: (token: string): void => {
     Cookies.set(COOKIE_ACCESS_TOKEN, token, {
-      secure: true,
+      secure: window.location.protocol === "https:",
       sameSite: "strict",
       path: "/",
     });
@@ -42,7 +42,7 @@ export const authCookies = {
 
   setRefreshToken: (token: string): void => {
     Cookies.set(COOKIE_REFRESH_TOKEN, token, {
-      secure: true,
+      secure: window.location.protocol === "https:",
       sameSite: "strict",
       path: "/",
     });
@@ -50,7 +50,7 @@ export const authCookies = {
 
   setAuthProvider: (provider: string): void => {
     Cookies.set(COOKIE_AUTH_PROVIDER, provider, {
-      secure: true,
+      secure: window.location.protocol === "https:",
       sameSite: "strict",
       path: "/",
     });
