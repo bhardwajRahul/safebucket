@@ -9,6 +9,8 @@ func NewActivityLogger(config models.ActivityConfiguration) activity.IActivityLo
 	switch config.Type {
 	case "loki":
 		return activity.NewLokiClient(config)
+	case "filesystem":
+		return activity.NewFilesystemClient(config)
 	default:
 		return nil
 	}

@@ -201,8 +201,13 @@ type NotifierConfiguration struct {
 }
 
 type ActivityConfiguration struct {
-	Type string            `mapstructure:"type" validate:"required,oneof=loki"`
-	Loki LokiConfiguration `mapstructure:"loki" validate:"required_if=Type loki"`
+	Type       string                           `mapstructure:"type"       validate:"required,oneof=loki filesystem"`
+	Loki       *LokiConfiguration               `mapstructure:"loki"       validate:"required_if=Type loki"`
+	Filesystem *FilesystemActivityConfiguration `mapstructure:"filesystem" validate:"required_if=Type filesystem"`
+}
+
+type FilesystemActivityConfiguration struct {
+	Directory string `mapstructure:"directory" validate:"required"`
 }
 
 type LokiConfiguration struct {
