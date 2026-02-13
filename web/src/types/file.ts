@@ -17,4 +17,5 @@ export interface IFile {
   deleted_at: string | null;
   deleted_by?: string;
   original_path?: string;
+  expires_at: string | null;
 }

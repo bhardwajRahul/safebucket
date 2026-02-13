@@ -66,7 +66,7 @@ export const FileActions: FC<IFileActionsProps> = ({
     <>
       <Menu>
         <MenuTrigger asChild>{children}</MenuTrigger>
-        <MenuContent className={trashMode ? "w-[180px]" : "w-40"}>
+        <MenuContent className={trashMode ? "w-[180px]" : "w-48"}>
           {trashMode ? (
             <>
               {isContributor && (
