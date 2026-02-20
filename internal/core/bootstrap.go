@@ -80,11 +80,20 @@ func StartWorkers(
 				Publisher:          eventRouter,
 				TrashRetentionDays: config.App.TrashRetentionDays,
 				RunInterval:        time.Duration(config.App.TrashRetentionDays) * 24 * time.Hour / 7,
-				ActivityLogger:     activityLogger,
 			}
 			worker.Start(ctx)
 		})
 	}
+
+	startWorker(profile.Workers.GarbageCollector, "garbage_collector", cache, appIdentity, func(ctx context.Context) {
+		worker := &workers.GarbageCollectorWorker{
+			DB:             db,
+			Storage:        store,
+			ActivityLogger: activityLogger,
+			RunInterval:    15 * time.Minute,
+		}
+		worker.Start(ctx)
+	})
 
 	startWorker(profile.Workers.ObjectDeletion, "object_deletion", cache, appIdentity, func(_ context.Context) {
 		deletionEvents := eventsManager.GetSubscriber(configuration.EventsObjectDeletion).Subscribe()
