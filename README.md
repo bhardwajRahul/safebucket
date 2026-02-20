@@ -37,7 +37,7 @@ existing corporate identities.
 
 ```bash
 git clone https://github.com/safebucket/safebucket.git
-cd safebucket/deployments/local
+cd safebucket/deployments/local/full
 docker compose up -d
 ```
 

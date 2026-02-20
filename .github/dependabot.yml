@@ -40,9 +40,9 @@ updates:
         dependency-type: "production"
         update-types: ["minor", "patch"]
 
-  # Docker-compose stack (local)
+  # Docker-compose stack (local/full)
   - package-ecosystem: "docker-compose"
-    directory: "/deployments/local"
+    directory: "/deployments/local/full"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -50,7 +50,7 @@ updates:
     target-branch: "main"
     open-pull-requests-limit: 5
     commit-message:
-      prefix: "[docker-compose:local]"
+      prefix: "[docker-compose:local-full]"
       include: "scope"
     groups:
       minor-and-patch:
@@ -67,6 +67,22 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "[docker-compose:dev]"
+      include: "scope"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # Docker-compose stack (local/lite)
+  - package-ecosystem: "docker-compose"
+    directory: "/deployments/local/lite"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    target-branch: "main"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "[docker-compose:local-lite]"
       include: "scope"
     groups:
       minor-and-patch:
