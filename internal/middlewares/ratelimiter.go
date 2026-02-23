@@ -1,13 +1,12 @@
 package middlewares
 
 import (
+	"api/internal/cache"
+	"api/internal/helpers"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
-
-	"api/internal/cache"
-	"api/internal/helpers"
 
 	"go.uber.org/zap"
 )
@@ -62,11 +61,12 @@ func applyRateLimit(
 	next http.Handler,
 	w http.ResponseWriter,
 	r *http.Request,
-	cache cache.ICache,
+	c cache.ICache,
 	userIdentifier string,
 	requestsPerMinute int,
 ) {
-	retryAfter, err := cache.GetRateLimit(userIdentifier, requestsPerMinute)
+	retryAfter, err := cache.GetRateLimit(c, userIdentifier, requestsPerMinute)
+
 	if err != nil {
 		zap.L().Error("error", zap.Error(err))
 		helpers.RespondWithError(w, 500, []string{"INTERNAL_SERVER_ERROR"})
