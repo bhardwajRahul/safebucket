@@ -13,6 +13,9 @@ on:
       - '.github/workflows/quality-frontend.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   frontend:
     runs-on: ubuntu-latest
