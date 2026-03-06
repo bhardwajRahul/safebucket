@@ -1,12 +1,17 @@
 package main
 
 import (
+	"embed"
+
 	"api/internal/configuration"
 	"api/internal/core"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
+
+//go:embed all:web/dist
+var webDistFS embed.FS
 
 func main() {
 	zap.ReplaceGlobals(zap.Must(zap.NewProduction()))
@@ -57,7 +62,7 @@ func main() {
 	}
 
 	if profile.HTTPServer {
-		core.StartHTTPServer(config, db, cache, storage, activityLogger, notify, eventRouter)
+		core.StartHTTPServer(config, db, cache, storage, activityLogger, notify, eventRouter, webDistFS)
 	} else if profile.Workers.AnyEnabled() {
 		zap.L().Info("Running in worker-only mode")
 		select {} // Block forever

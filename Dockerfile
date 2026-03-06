@@ -26,8 +26,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+COPY --from=frontend-builder /app/web/dist ./web/dist
 
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -a -o safebucket main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -a -o safebucket .
 RUN upx --best --lzma safebucket
 RUN mkdir -p /app/data
 
@@ -37,9 +38,6 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 WORKDIR /app
 
 COPY --from=backend-builder --chown=nonroot:nonroot /app/safebucket ./safebucket
-COPY --from=frontend-builder --chown=nonroot:nonroot /app/web/dist ./web/dist
-COPY --from=backend-builder --chown=nonroot:nonroot /app/internal/mails ./internal/mails
-
 COPY --chown=nonroot:nonroot --from=backend-builder /app/data /app/data
 
 EXPOSE 8080
