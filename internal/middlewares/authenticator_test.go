@@ -1,14 +1,14 @@
 package middlewares
 
 import (
+	"api/internal/configuration"
+	"api/internal/models"
+	"api/internal/tests"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"api/internal/models"
-	"api/internal/tests"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -36,10 +36,10 @@ func generateTestToken(secret string, user *models.User, expiresIn time.Duration
 		Email:    user.Email,
 		UserID:   user.ID,
 		Role:     user.Role,
-		Aud:      "app:*",
 		Provider: "test",
-		Issuer:   "safebucket",
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    configuration.AppName,
+			Audience:  jwt.ClaimStrings{"app:*"},
 			IssuedAt:  &jwt.NumericDate{Time: time.Now()},
 			ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(expiresIn)},
 		},
@@ -435,7 +435,7 @@ func TestAuthenticate_UserClaimsInContext(t *testing.T) {
 	assert.Equal(t, testUser.ID, capturedClaims.UserID)
 	assert.Equal(t, testUser.Role, capturedClaims.Role)
 	assert.Equal(t, "test", capturedClaims.Provider)
-	assert.Equal(t, "safebucket", capturedClaims.Issuer)
+	assert.Equal(t, configuration.AppName, capturedClaims.Issuer)
 }
 
 func TestAuthenticate_ContextPropagation(t *testing.T) {

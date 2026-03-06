@@ -95,8 +95,8 @@ func TestNewAccessToken(t *testing.T) {
 		assert.Equal(t, user.ID, claims.UserID)
 		assert.Equal(t, user.Role, claims.Role)
 		assert.Equal(t, provider, claims.Provider)
-		assert.Equal(t, "safebucket", claims.Issuer)
-		assert.Equal(t, "app:*", claims.Aud)
+		assert.Equal(t, configuration.AppName, claims.Issuer)
+		assert.Equal(t, "app:*", claims.Audience[0])
 	})
 
 	t.Run("should expire in configured minutes", func(t *testing.T) {
@@ -167,7 +167,7 @@ func TestParseToken(t *testing.T) {
 		assert.Equal(t, user.Email, claims.Email)
 		assert.Equal(t, user.ID, claims.UserID)
 		assert.Equal(t, user.Role, claims.Role)
-		assert.Equal(t, "app:*", claims.Aud) // Audience is in claims, not validated
+		assert.Equal(t, "app:*", claims.Audience[0]) // Audience is in claims, not validated
 	})
 
 	t.Run("should parse valid token without Bearer prefix when not required", func(t *testing.T) {
@@ -178,7 +178,7 @@ func TestParseToken(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, user.Email, claims.Email)
-		assert.Equal(t, "auth:refresh", claims.Aud)
+		assert.Equal(t, "auth:refresh", claims.Audience[0])
 	})
 
 	t.Run("should reject token without Bearer prefix when required", func(t *testing.T) {
@@ -210,10 +210,10 @@ func TestParseToken(t *testing.T) {
 			Email:    user.Email,
 			UserID:   user.ID,
 			Role:     user.Role,
-			Aud:      "app:*",
 			Provider: provider,
-			Issuer:   "safebucket",
 			RegisteredClaims: jwt.RegisteredClaims{
+				Audience:  jwt.ClaimStrings{"app:*"},
+				Issuer:    configuration.AppName,
 				IssuedAt:  &jwt.NumericDate{Time: time.Now().Add(-2 * time.Hour)},
 				ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(-1 * time.Hour)},
 			},
@@ -226,13 +226,13 @@ func TestParseToken(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("should parse token with any audience (no audience validation)", func(t *testing.T) {
+	t.Run("should parse token with any single audience", func(t *testing.T) {
 		// Create tokens with different audiences
 		accessToken, _ := NewAccessToken(jwtSecret, user, provider)
 		refreshToken, _ := NewRefreshToken(jwtSecret, user, provider)
 		mfaToken, _ := NewRestrictedAccessToken(jwtSecret, user, configuration.AudienceMFALogin, false, nil)
 
-		// ParseToken should accept all of them - audience validation is not its responsibility
+		// ParseToken should accept all of them - audience value validation is not its responsibility
 		claims1, err1 := ParseToken(jwtSecret, "Bearer "+accessToken, true)
 		claims2, err2 := ParseToken(jwtSecret, refreshToken, false)
 		claims3, err3 := ParseToken(jwtSecret, "Bearer "+mfaToken, true)
@@ -241,9 +241,52 @@ func TestParseToken(t *testing.T) {
 		require.NoError(t, err2)
 		require.NoError(t, err3)
 
-		assert.Equal(t, "app:*", claims1.Aud)
-		assert.Equal(t, "auth:refresh", claims2.Aud)
-		assert.Equal(t, configuration.AudienceMFALogin, claims3.Aud)
+		assert.Equal(t, "app:*", claims1.Audience[0])
+		assert.Equal(t, "auth:refresh", claims2.Audience[0])
+		assert.Equal(t, configuration.AudienceMFALogin, claims3.Audience[0])
+	})
+
+	t.Run("should reject token with multiple audiences", func(t *testing.T) {
+		claims := models.UserClaims{
+			Email:    user.Email,
+			UserID:   user.ID,
+			Role:     user.Role,
+			Provider: provider,
+			RegisteredClaims: jwt.RegisteredClaims{
+				Audience:  jwt.ClaimStrings{"app:*", "auth:refresh"},
+				Issuer:    configuration.AppName,
+				IssuedAt:  &jwt.NumericDate{Time: time.Now()},
+				ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(1 * time.Hour)},
+			},
+		}
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		signedToken, err := token.SignedString([]byte(jwtSecret))
+		require.NoError(t, err)
+
+		_, err = ParseToken(jwtSecret, "Bearer "+signedToken, true)
+		assert.Error(t, err)
+		assert.Equal(t, "invalid token audience", err.Error())
+	})
+
+	t.Run("should reject token with no audience", func(t *testing.T) {
+		claims := models.UserClaims{
+			Email:    user.Email,
+			UserID:   user.ID,
+			Role:     user.Role,
+			Provider: provider,
+			RegisteredClaims: jwt.RegisteredClaims{
+				Issuer:    configuration.AppName,
+				IssuedAt:  &jwt.NumericDate{Time: time.Now()},
+				ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(1 * time.Hour)},
+			},
+		}
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		signedToken, err := token.SignedString([]byte(jwtSecret))
+		require.NoError(t, err)
+
+		_, err = ParseToken(jwtSecret, "Bearer "+signedToken, true)
+		assert.Error(t, err)
+		assert.Equal(t, "invalid token audience", err.Error())
 	})
 }
 
@@ -275,7 +318,7 @@ func TestNewRefreshToken(t *testing.T) {
 		})
 
 		require.NoError(t, err)
-		assert.Equal(t, "auth:refresh", claims.Aud)
+		assert.Equal(t, "auth:refresh", claims.Audience[0])
 	})
 
 	t.Run("should expire in configured minutes", func(t *testing.T) {
@@ -332,7 +375,7 @@ func TestParseRefreshToken(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, user.Email, claims.Email)
 		assert.Equal(t, user.ID, claims.UserID)
-		assert.Equal(t, "auth:refresh", claims.Aud)
+		assert.Equal(t, "auth:refresh", claims.Audience[0])
 	})
 
 	t.Run("should reject access token as refresh token", func(t *testing.T) {
@@ -358,10 +401,10 @@ func TestParseRefreshToken(t *testing.T) {
 			Email:    user.Email,
 			UserID:   user.ID,
 			Role:     user.Role,
-			Aud:      "auth:refresh",
 			Provider: provider,
-			Issuer:   "safebucket",
 			RegisteredClaims: jwt.RegisteredClaims{
+				Audience:  jwt.ClaimStrings{"auth:refresh"},
+				Issuer:    configuration.AppName,
 				IssuedAt:  &jwt.NumericDate{Time: time.Now().Add(-11 * time.Hour)},
 				ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(-1 * time.Hour)},
 			},
@@ -402,7 +445,7 @@ func TestNewRestrictedAccessToken(t *testing.T) {
 		})
 
 		require.NoError(t, err)
-		assert.Equal(t, configuration.AudienceMFALogin, claims.Aud)
+		assert.Equal(t, configuration.AudienceMFALogin, claims.Audience[0])
 		assert.Equal(t, user.Email, claims.Email)
 		assert.Equal(t, user.ID, claims.UserID)
 	})

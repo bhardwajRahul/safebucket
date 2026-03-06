@@ -37,10 +37,10 @@ func createToken(jwtSecret string, user *models.User, config tokenConfig) (strin
 		Email:    user.Email,
 		UserID:   user.ID,
 		Role:     user.Role,
-		Aud:      config.audience,
-		Issuer:   configuration.AppName,
 		Provider: config.provider,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    configuration.AppName,
+			Audience:  jwt.ClaimStrings{config.audience},
 			IssuedAt:  &jwt.NumericDate{Time: time.Now()},
 			ExpiresAt: &jwt.NumericDate{Time: time.Now().Add(time.Minute * time.Duration(config.expiryMinutes))},
 		},
@@ -84,6 +84,10 @@ func ParseToken(jwtSecret string, tokenString string, requireBearer bool) (model
 	)
 	if err != nil {
 		return models.UserClaims{}, errors.New("invalid token")
+	}
+
+	if len(claims.Audience) != 1 {
+		return models.UserClaims{}, errors.New("invalid token audience")
 	}
 
 	return *claims, nil
@@ -131,7 +135,7 @@ func ParseRefreshToken(jwtSecret string, refreshToken string) (models.UserClaims
 		return models.UserClaims{}, errors.New("invalid refresh token")
 	}
 
-	if claims.Aud != configuration.AudienceRefreshToken {
+	if claims.AudienceString() != configuration.AudienceRefreshToken {
 		return models.UserClaims{}, errors.New("invalid refresh token audience")
 	}
 
