@@ -1,12 +1,13 @@
 package middlewares
 
 import (
-	"api/internal/cache"
-	"api/internal/helpers"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/safebucket/safebucket/internal/cache"
+	"github.com/safebucket/safebucket/internal/helpers"
 
 	"go.uber.org/zap"
 )

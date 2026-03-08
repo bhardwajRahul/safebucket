@@ -1,8 +1,9 @@
 package rbac
 
 import (
-	"api/internal/models"
 	"errors"
+
+	"github.com/safebucket/safebucket/internal/models"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
