@@ -79,3 +79,80 @@ func RefreshLock(c ICache, key string, instanceID string, ttl time.Duration) (bo
 	}
 	return false, err
 }
+
+type ActiveSession struct {
+	SID       string
+	CreatedAt time.Time
+}
+
+func sessionKey(userID string) string {
+	return fmt.Sprintf(configuration.CacheUserSessionsKey, userID)
+}
+
+func sessionCutoff(maxAge time.Duration) string {
+	return strconv.FormatFloat(float64(time.Now().Add(-maxAge).Unix()), 'f', 0, 64)
+}
+
+func CreateSession(c ICache, userID string, sid string) error {
+	return c.ZAdd(sessionKey(userID), float64(time.Now().Unix()), sid)
+}
+
+func IsSessionActive(c ICache, userID string, sid string, maxAge time.Duration) (bool, error) {
+	score, err := c.ZScore(sessionKey(userID), sid)
+	if err != nil {
+		if errors.Is(err, ErrKeyNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	cutoff := float64(time.Now().Add(-maxAge).Unix())
+	return score >= cutoff, nil
+}
+
+func ListActiveSessions(c ICache, userID string, maxAge time.Duration) ([]ActiveSession, error) {
+	key := sessionKey(userID)
+	cutoff := sessionCutoff(maxAge)
+
+	_ = c.ZRemRangeByScore(key, "-inf", cutoff)
+
+	entries, err := c.ZRangeByScoreWithScores(key, cutoff, "+inf")
+	if err != nil {
+		return nil, err
+	}
+
+	sessions := make([]ActiveSession, 0, len(entries))
+	for _, e := range entries {
+		sessions = append(sessions, ActiveSession{
+			SID:       e.Member,
+			CreatedAt: time.Unix(int64(e.Score), 0),
+		})
+	}
+	return sessions, nil
+}
+
+func RevokeSession(c ICache, userID string, sid string) error {
+	return c.ZAdd(sessionKey(userID), 0, sid)
+}
+
+func RevokeOtherSessions(c ICache, userID string, currentSID string, maxAge time.Duration) error {
+	key := sessionKey(userID)
+	cutoff := sessionCutoff(maxAge)
+
+	entries, err := c.ZRangeByScoreWithScores(key, cutoff, "+inf")
+	if err != nil {
+		return err
+	}
+
+	for _, e := range entries {
+		if e.Member != currentSID {
+			if zErr := c.ZAdd(key, 0, e.Member); zErr != nil {
+				return zErr
+			}
+		}
+	}
+	return nil
+}
+
+func RevokeAllSessions(c ICache, userID string) error {
+	return c.Del(sessionKey(userID))
+}

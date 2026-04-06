@@ -96,11 +96,36 @@ func (r *RueidisCache) ZAdd(key string, score float64, member string) error {
 	).Error()
 }
 
-func (r *RueidisCache) ZRangeByScore(key string, minScore string, maxScore string) ([]string, error) {
+func (r *RueidisCache) ZScore(key string, member string) (float64, error) {
 	ctx := context.Background()
-	return r.client.Do(ctx,
-		r.client.B().Zrangebyscore().Key(key).Min(minScore).Max(maxScore).Build(),
-	).AsStrSlice()
+	score, err := r.client.Do(ctx, r.client.B().Zscore().Key(key).Member(member).Build()).AsFloat64()
+	if err != nil {
+		if rueidis.IsRedisNil(err) {
+			return 0, ErrKeyNotFound
+		}
+		return 0, err
+	}
+	return score, nil
+}
+
+func (r *RueidisCache) ZRangeByScoreWithScores(
+	key string, minScore string, maxScore string,
+) ([]ZScoreEntry, error) {
+	ctx := context.Background()
+	scores, err := r.client.Do(ctx,
+		r.client.B().Zrange().Key(key).Min(minScore).Max(maxScore).Byscore().Withscores().Build(),
+	).AsZScores()
+	if err != nil {
+		if rueidis.IsRedisNil(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	entries := make([]ZScoreEntry, len(scores))
+	for i, s := range scores {
+		entries[i] = ZScoreEntry{Member: s.Member, Score: s.Score}
+	}
+	return entries, nil
 }
 
 func (r *RueidisCache) ZRemRangeByScore(key string, minScore string, maxScore string) error {
