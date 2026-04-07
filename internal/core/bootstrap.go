@@ -313,6 +313,13 @@ func StartHTTPServer(
 			DB:             db,
 			ActivityLogger: activityLogger,
 		}.Routes())
+
+		apiRouter.Mount("/v1/shares", services.PublicShareService{
+			DB:             db,
+			Storage:        store,
+			ActivityLogger: activityLogger,
+			JWTSecret:      authConfig.JWTSecret,
+		}.Routes())
 	})
 
 	if config.App.StaticFiles.Enabled {
