@@ -19,7 +19,8 @@ func main() {
 	config := configuration.Read()
 	core.NewLogger(config.App.LogLevel)
 
-	profile := configuration.GetProfile(config.App.Profile)
+	profile, stopProfiler := core.StartProfiler(config)
+	defer stopProfiler()
 
 	db := core.NewDatabase(config.Database)
 	if sqlDB, err := db.DB(); err == nil {
