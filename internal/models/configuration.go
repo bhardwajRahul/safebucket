@@ -10,31 +10,33 @@ type Configuration struct {
 	Notifier  NotifierConfiguration  `mapstructure:"notifier"  validate:"required"`
 	Activity  ActivityConfiguration  `mapstructure:"activity"  validate:"required"`
 	Profiling ProfilingConfiguration `mapstructure:"profiling"`
+	Tracing   TracingConfiguration   `mapstructure:"tracing"`
 }
 
 type AppConfiguration struct {
-	Profile                          string              `mapstructure:"profile"                             validate:"oneof=default api worker"`
-	AdminEmail                       string              `mapstructure:"admin_email"                         validate:"required,email"`
-	AdminPassword                    string              `mapstructure:"admin_password"                      validate:"required"`
-	APIURL                           string              `mapstructure:"api_url"                             validate:"required"`
-	AllowedOrigins                   []string            `mapstructure:"allowed_origins"                     validate:"required"`
-	JWTSecret                        string              `mapstructure:"jwt_secret"                          validate:"required"`
-	MFAEncryptionKey                 string              `mapstructure:"mfa_encryption_key"                  validate:"len=32"`
-	MFARequired                      bool                `mapstructure:"mfa_required"`
-	AccessTokenExpiry                int                 `mapstructure:"access_token_expiry"                 validate:"gte=1,lte=1440"`
-	RefreshTokenExpiry               int                 `mapstructure:"refresh_token_expiry"                validate:"gte=1,lte=720"`
-	MFATokenExpiry                   int                 `mapstructure:"mfa_token_expiry"                    validate:"gte=1,lte=30"`
-	LogLevel                         string              `mapstructure:"log_level"                           validate:"oneof=debug info warn error fatal panic"`
-	Port                             int                 `mapstructure:"port"                                validate:"gte=80,lte=65535"`
-	StaticFiles                      StaticConfiguration `mapstructure:"static_files"`
-	TrustedProxies                   []string            `mapstructure:"trusted_proxies"                     validate:"required"`
-	WebURL                           string              `mapstructure:"web_url"                             validate:"required"`
-	TrashRetentionDays               int                 `mapstructure:"trash_retention_days"                validate:"gte=1,lte=365"`
-	MaxUploadSize                    int64               `mapstructure:"max_upload_size"                     validate:"gte=1"`
-	AuthenticatedRequestsPerMinute   int                 `mapstructure:"authenticated_requests_per_minute"   validate:"gte=1"`
-	UnauthenticatedRequestsPerMinute int                 `mapstructure:"unauthenticated_requests_per_minute" validate:"gte=1"`
-	TLSCertFile                      string              `mapstructure:"tls_cert_file"                       validate:"required_with=TLSKeyFile"`
-	TLSKeyFile                       string              `mapstructure:"tls_key_file"                        validate:"required_with=TLSCertFile"`
+	Profile                          string                 `mapstructure:"profile"                             validate:"oneof=default api worker"`
+	AdminEmail                       string                 `mapstructure:"admin_email"                         validate:"required,email"`
+	AdminPassword                    string                 `mapstructure:"admin_password"                      validate:"required"`
+	APIURL                           string                 `mapstructure:"api_url"                             validate:"required"`
+	AllowedOrigins                   []string               `mapstructure:"allowed_origins"                     validate:"required"`
+	JWTSecret                        string                 `mapstructure:"jwt_secret"                          validate:"required"`
+	MFAEncryptionKey                 string                 `mapstructure:"mfa_encryption_key"                  validate:"len=32"`
+	MFARequired                      bool                   `mapstructure:"mfa_required"`
+	AccessTokenExpiry                int                    `mapstructure:"access_token_expiry"                 validate:"gte=1,lte=1440"`
+	RefreshTokenExpiry               int                    `mapstructure:"refresh_token_expiry"                validate:"gte=1,lte=720"`
+	MFATokenExpiry                   int                    `mapstructure:"mfa_token_expiry"                    validate:"gte=1,lte=30"`
+	LogLevel                         string                 `mapstructure:"log_level"                           validate:"oneof=debug info warn error fatal panic"`
+	Port                             int                    `mapstructure:"port"                                validate:"gte=80,lte=65535"`
+	StaticFiles                      StaticConfiguration    `mapstructure:"static_files"`
+	TrustedProxies                   []string               `mapstructure:"trusted_proxies"                     validate:"required"`
+	WebURL                           string                 `mapstructure:"web_url"                             validate:"required"`
+	TrashRetentionDays               int                    `mapstructure:"trash_retention_days"                validate:"gte=1,lte=365"`
+	MaxUploadSize                    int64                  `mapstructure:"max_upload_size"                     validate:"gte=1"`
+	AuthenticatedRequestsPerMinute   int                    `mapstructure:"authenticated_requests_per_minute"   validate:"gte=1"`
+	UnauthenticatedRequestsPerMinute int                    `mapstructure:"unauthenticated_requests_per_minute" validate:"gte=1"`
+	TLSCertFile                      string                 `mapstructure:"tls_cert_file"                       validate:"required_with=TLSKeyFile"`
+	TLSKeyFile                       string                 `mapstructure:"tls_key_file"                        validate:"required_with=TLSCertFile"`
+	Profiling                        ProfilingConfiguration `mapstructure:"profiling"`
 }
 
 type ProfilingConfiguration struct {
@@ -48,6 +50,19 @@ type PyroscopeConfiguration struct {
 	ApplicationName string            `mapstructure:"application_name" validate:"required"`
 	UploadRate      int               `mapstructure:"upload_rate"      validate:"gte=1"`
 	Tags            map[string]string `mapstructure:"tags"`
+}
+
+type TracingConfiguration struct {
+	Enabled bool                `mapstructure:"enabled"`
+	Type    string              `mapstructure:"type"    validate:"required_if=Enabled true,omitempty,oneof=tempo"`
+	Tempo   *TempoConfiguration `mapstructure:"tempo"   validate:"required_if=Type tempo"`
+}
+
+type TempoConfiguration struct {
+	Endpoint     string            `mapstructure:"endpoint"      validate:"required,http_url"`
+	ServiceName  string            `mapstructure:"service_name"  validate:"required"`
+	SamplingRate float64           `mapstructure:"sampling_rate" validate:"gte=0,lte=1"`
+	Tags         map[string]string `mapstructure:"tags"`
 }
 
 type DatabaseConfiguration struct {
