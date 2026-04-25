@@ -1,10 +1,12 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/safebucket/safebucket/internal/cache"
@@ -15,8 +17,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// batchMeta holds the metadata for a notification batch, stored as JSON in cache.
-// ActionText is computed at flush time and excluded from serialization.
 type batchMeta struct {
 	RecipientEmail   string             `json:"recipient_email"`
 	ActorEmail       string             `json:"actor_email"`
@@ -185,12 +185,19 @@ func composeShareBatchEmail(meta batchMeta, count int64) (string, string) {
 }
 
 // StartFileNotificationBuffer starts a background goroutine that flushes all notification batches.
-func StartFileNotificationBuffer(c cache.ICache, n notifier.INotifier) {
+// The goroutine is registered on wg so callers can wait for it to drain on shutdown.
+func StartFileNotificationBuffer(ctx context.Context, wg *sync.WaitGroup, c cache.ICache, n notifier.INotifier) {
 	ticker := time.NewTicker(configuration.CacheNotifyFlush * time.Second)
 
-	go func() {
+	wg.Go(func() {
 		defer ticker.Stop()
-		for range ticker.C {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
 			entries, err := c.ZRangeByScoreWithScores(
 				configuration.CacheNotifyBatchesKey,
 				"1",
@@ -210,5 +217,5 @@ func StartFileNotificationBuffer(c cache.ICache, n notifier.INotifier) {
 
 			_ = c.ZRemRangeByScore(configuration.CacheNotifyBatchesKey, "-inf", "0")
 		}
-	}()
+	})
 }

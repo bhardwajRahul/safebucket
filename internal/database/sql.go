@@ -26,17 +26,18 @@ var postgresMigrations embed.FS
 //go:embed migrations/sqlite/*.sql
 var sqliteMigrations embed.FS
 
-const DialectSQLite = "sqlite"
-const DialectPostgres = "postgres"
+const (
+	DialectPostgres = "postgres"
+	DialectSQLite   = "sqlite"
+)
 
 var migrationSources = map[string]embed.FS{
 	DialectPostgres: postgresMigrations,
 	DialectSQLite:   sqliteMigrations,
 }
 
-func runMigrations(db *sql.DB, dialect string) {
+func RunMigrations(db *sql.DB, dialect string) {
 	goose.SetLogger(zapGooseLogger{l: zap.L()})
-
 	gooseDialect := dialect
 	if dialect == DialectSQLite {
 		gooseDialect = "sqlite3"

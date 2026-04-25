@@ -3,10 +3,12 @@ package core
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/safebucket/safebucket/internal/activity"
@@ -15,6 +17,7 @@ import (
 	"github.com/safebucket/safebucket/internal/database"
 	"github.com/safebucket/safebucket/internal/events"
 	h "github.com/safebucket/safebucket/internal/helpers"
+	"github.com/safebucket/safebucket/internal/messaging"
 	m "github.com/safebucket/safebucket/internal/middlewares"
 	"github.com/safebucket/safebucket/internal/models"
 	"github.com/safebucket/safebucket/internal/notifier"
@@ -30,18 +33,16 @@ import (
 	"gorm.io/gorm"
 )
 
-func StartProfiler(config models.Configuration) (models.Profile, func()) {
+func StartProfiler(config models.Configuration) func() {
 	profiler := NewProfiler(config.Profiling, config.App.Profile)
-	cleanup := func() {}
-	if profiler != nil {
-		cleanup = func() {
-			if err := profiler.Stop(); err != nil {
-				zap.L().Error("Failed to stop profiler", zap.Error(err))
-			}
+	if profiler == nil {
+		return func() {}
+	}
+	return func() {
+		if err := profiler.Stop(); err != nil {
+			zap.L().Error("Failed to stop profiler", zap.Error(err))
 		}
 	}
-	profile := configuration.GetProfile(config.App.Profile)
-	return profile, cleanup
 }
 
 func StartTracer(config models.Configuration) func() {
@@ -77,7 +78,45 @@ func CreateAdminUser(db *gorm.DB, config models.Configuration) {
 	database.UpsertAdminUser(db, &adminUser)
 }
 
+type WorkersHandle struct {
+	wg *sync.WaitGroup
+}
+
+func NewWorkersHandle() *WorkersHandle {
+	return &WorkersHandle{wg: &sync.WaitGroup{}}
+}
+
+func (h *WorkersHandle) WG() *sync.WaitGroup {
+	return h.wg
+}
+
+func (h *WorkersHandle) Wait() {
+	if h == nil || h.wg == nil {
+		return
+	}
+	h.wg.Wait()
+}
+
+func (h *WorkersHandle) Shutdown(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		h.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func StartWorkers(
+	ctx context.Context,
+	handle *WorkersHandle,
 	profile models.Profile,
 	eventsManager *EventsManager,
 	db *gorm.DB,
@@ -100,58 +139,72 @@ func StartWorkers(
 		Cache:              cache,
 	}
 
-	events.StartFileNotificationBuffer(cache, notify)
+	events.StartFileNotificationBuffer(ctx, handle.wg, cache, notify)
 	zap.L().Info("Started file notification buffer")
 
-	notifications := eventsManager.GetSubscriber(configuration.EventsNotifications).Subscribe()
-	go events.HandleEvents(eventParams, notifications)
-	zap.L().Info("Started notifications worker")
-
-	if RequiresUploadConfirmation(config.Storage.Type, config.Events.Type) {
-		startWorker(profile.Workers.TrashCleanup, "trash_cleanup", cache, appIdentity, func(ctx context.Context) {
-			worker := &workers.TrashCleanupWorker{
-				DB:                 db,
-				Publisher:          eventRouter,
-				TrashRetentionDays: config.App.TrashRetentionDays,
-				RunInterval:        time.Duration(config.App.TrashRetentionDays) * 24 * time.Hour / 7,
-			}
-			worker.Start(ctx)
+	if notificationsSub := eventsManager.GetSubscriber(configuration.EventsNotifications); notificationsSub != nil {
+		notifications := notificationsSub.Subscribe()
+		handle.wg.Go(func() {
+			events.HandleEvents(ctx, eventParams, notifications)
 		})
+		zap.L().Info("Started notifications worker")
 	}
 
-	startWorker(profile.Workers.GarbageCollector, "garbage_collector", cache, appIdentity, func(ctx context.Context) {
-		worker := &workers.GarbageCollectorWorker{
-			DB:                 db,
-			Storage:            store,
-			Cache:              cache,
-			ActivityLogger:     activityLogger,
-			RunInterval:        15 * time.Minute,
-			RefreshTokenExpiry: config.App.RefreshTokenExpiry,
-		}
-		worker.Start(ctx)
-	})
+	if RequiresUploadConfirmation(config.Storage.Type, config.Events.Type) {
+		startWorker(ctx, handle.wg, profile.Workers.TrashCleanup, "trash_cleanup", cache, appIdentity,
+			func(workerCtx context.Context) {
+				worker := &workers.TrashCleanupWorker{
+					DB:                 db,
+					Publisher:          eventRouter,
+					TrashRetentionDays: config.App.TrashRetentionDays,
+					RunInterval:        time.Duration(config.App.TrashRetentionDays) * 24 * time.Hour / 7,
+				}
+				worker.Start(workerCtx)
+			})
+	}
 
-	startWorker(profile.Workers.ObjectDeletion, "object_deletion", cache, appIdentity, func(_ context.Context) {
-		deletionEvents := eventsManager.GetSubscriber(configuration.EventsObjectDeletion).Subscribe()
-		events.HandleEvents(eventParams, deletionEvents)
-	})
+	startWorker(ctx, handle.wg, profile.Workers.GarbageCollector, "garbage_collector", cache, appIdentity,
+		func(workerCtx context.Context) {
+			worker := &workers.GarbageCollectorWorker{
+				DB:                 db,
+				Storage:            store,
+				Cache:              cache,
+				ActivityLogger:     activityLogger,
+				RunInterval:        15 * time.Minute,
+				RefreshTokenExpiry: config.App.RefreshTokenExpiry,
+			}
+			worker.Start(workerCtx)
+		})
 
-	startWorker(profile.Workers.BucketEvents, "bucket_events", cache, appIdentity, func(_ context.Context) {
-		bucketEventsSubscriber := eventsManager.GetSubscriber(configuration.EventsBucketEvents)
-		bucketEvents := bucketEventsSubscriber.Subscribe()
-		events.HandleBucketEvents(
-			eventsManager.parser,
-			db,
-			activityLogger,
-			store,
-			eventRouter,
-			config.App.TrashRetentionDays,
-			bucketEvents,
-		)
-	})
+	if deletionSub := eventsManager.GetSubscriber(configuration.EventsObjectDeletion); deletionSub != nil {
+		deletionMessages := deletionSub.Subscribe()
+		startWorker(ctx, handle.wg, profile.Workers.ObjectDeletion, "object_deletion", cache, appIdentity,
+			func(workerCtx context.Context) {
+				events.HandleEvents(workerCtx, eventParams, deletionMessages)
+			})
+	}
+
+	if bucketSub := eventsManager.GetSubscriber(configuration.EventsBucketEvents); bucketSub != nil {
+		bucketMessages := bucketSub.Subscribe()
+		startWorker(ctx, handle.wg, profile.Workers.BucketEvents, "bucket_events", cache, appIdentity,
+			func(workerCtx context.Context) {
+				events.HandleBucketEvents(
+					workerCtx,
+					eventsManager.parser,
+					db,
+					activityLogger,
+					store,
+					eventRouter,
+					config.App.TrashRetentionDays,
+					bucketMessages,
+				)
+			})
+	}
 }
 
 func startWorker(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	mode models.WorkerMode,
 	workerName string,
 	cache c.ICache,
@@ -163,14 +216,23 @@ func startWorker(
 	}
 
 	if mode == models.WorkerModeSingleton {
-		go startSingletonWorker(cache, appIdentity, workerName, runWorker)
+		wg.Go(func() {
+			startSingletonWorker(ctx, wg, cache, appIdentity, workerName, runWorker)
+		})
 	} else {
-		go runWorker(context.Background())
+		wg.Go(func() { runWorker(ctx) })
 		zap.L().Info("Started worker", zap.String("worker", workerName))
 	}
 }
 
-func startSingletonWorker(cache c.ICache, instanceID string, workerName string, runWorker func(context.Context)) {
+func startSingletonWorker(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	cache c.ICache,
+	instanceID string,
+	workerName string,
+	runWorker func(context.Context),
+) {
 	lockKey := fmt.Sprintf(configuration.CacheAppWorkerLockKey, workerName)
 	lockTTL := time.Duration(configuration.CacheAppWorkerLockTTL) * time.Second
 	ticker := time.NewTicker(time.Duration(configuration.CacheAppWorkerLockRefresh) * time.Second)
@@ -178,6 +240,26 @@ func startSingletonWorker(cache c.ICache, instanceID string, workerName string, 
 
 	var workerStarted bool
 	var cancelWorker context.CancelFunc
+	var workerDone chan struct{}
+	defer func() {
+		if cancelWorker != nil {
+			cancelWorker()
+		}
+		if workerDone != nil {
+			<-workerDone
+		}
+	}()
+	stopWorker := func() {
+		if cancelWorker != nil {
+			cancelWorker()
+			cancelWorker = nil
+		}
+		if workerDone != nil {
+			<-workerDone
+			workerDone = nil
+		}
+		workerStarted = false
+	}
 
 	for {
 		if !workerStarted {
@@ -189,27 +271,32 @@ func startSingletonWorker(cache c.ICache, instanceID string, workerName string, 
 			if acquired {
 				zap.L().Info("Acquired worker lock, starting worker", zap.String("worker", workerName))
 				workerStarted = true
-				var ctx context.Context
-				ctx, cancelWorker = context.WithCancel(context.Background())
-				go runWorker(ctx)
+				workerCtx, cancel := context.WithCancel(ctx)
+				cancelWorker = cancel
+				done := make(chan struct{})
+				workerDone = done
+				wg.Go(func() {
+					defer close(done)
+					runWorker(workerCtx)
+				})
 			}
 		} else {
 			refreshed, err := c.RefreshLock(cache, lockKey, instanceID, lockTTL)
 			if err != nil || !refreshed {
 				zap.L().Warn("Lost worker lock, stopping worker", zap.String("worker", workerName))
-				workerStarted = false
-				if cancelWorker != nil {
-					cancelWorker()
-					cancelWorker = nil
-				}
+				stopWorker()
 			}
 		}
 
-		<-ticker.C
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
-func StartIdentityTicker(cache c.ICache, id string) {
+func StartIdentityTicker(ctx context.Context, wg *sync.WaitGroup, cache c.ICache, id string) {
 	register := func() error {
 		return cache.ZAdd(
 			configuration.CacheAppIdentityKey,
@@ -233,30 +320,36 @@ func StartIdentityTicker(cache c.ICache, id string) {
 		zap.L().Fatal("Failed to delete inactive platforms", zap.String("platform", id), zap.Error(err))
 	}
 
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		if err := register(); err != nil {
-			zap.L().Fatal("App identity ticker crashed", zap.Error(err))
+	wg.Go(func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
+			if err := register(); err != nil {
+				zap.L().Error("App identity ticker failed to register", zap.Error(err))
+			}
+			if err := cleanup(); err != nil {
+				zap.L().Error("App identity ticker failed to cleanup", zap.Error(err))
+			}
 		}
-		if err := cleanup(); err != nil {
-			zap.L().Fatal("App identity ticker crashed", zap.Error(err))
-		}
-	}
+	})
 }
 
-func StartHTTPServer(
+func BuildAPIRouter(
 	config models.Configuration,
 	db *gorm.DB,
 	cache c.ICache,
 	store storage.IStorage,
 	activityLogger activity.IActivityLogger,
 	notify notifier.INotifier,
-	eventRouter *EventRouter,
-	embeddedWebFS embed.FS,
-) {
-	m.InitValidator(config.App.MaxUploadSize)
-
+	publisher messaging.IPublisher,
+	providers configuration.Providers,
+) chi.Router {
 	r := chi.NewRouter()
 
 	if config.Tracing.Enabled {
@@ -284,12 +377,6 @@ func StartHTTPServer(
 		MaxAge:           300,
 	}))
 
-	providers := configuration.LoadProviders(
-		context.Background(),
-		config.App.APIURL,
-		config.Auth.Providers,
-	)
-
 	authConfig := config.App.GetAuthConfig()
 
 	r.Route("/api", func(apiRouter chi.Router) {
@@ -307,7 +394,7 @@ func StartHTTPServer(
 			DB:                 db,
 			Cache:              cache,
 			AuthConfig:         authConfig,
-			Publisher:          eventRouter,
+			Publisher:          publisher,
 			Notifier:           notify,
 			ActivityLogger:     activityLogger,
 			RefreshTokenExpiry: configuration.RefreshTokenExpiry,
@@ -319,7 +406,7 @@ func StartHTTPServer(
 			DB:             db,
 			Cache:          cache,
 			AuthConfig:     authConfig,
-			Publisher:      eventRouter,
+			Publisher:      publisher,
 			Notifier:       notify,
 			ActivityLogger: activityLogger,
 		}.Routes())
@@ -327,7 +414,7 @@ func StartHTTPServer(
 		apiRouter.Mount("/v1/buckets", services.BucketService{
 			DB:                 db,
 			Storage:            store,
-			Publisher:          eventRouter,
+			Publisher:          publisher,
 			ActivityLogger:     activityLogger,
 			Providers:          providers,
 			WebURL:             config.App.WebURL,
@@ -339,7 +426,7 @@ func StartHTTPServer(
 			Cache:          cache,
 			AuthConfig:     authConfig,
 			Providers:      providers,
-			Publisher:      eventRouter,
+			Publisher:      publisher,
 			ActivityLogger: activityLogger,
 		}.Routes())
 
@@ -348,7 +435,7 @@ func StartHTTPServer(
 			Cache:          cache,
 			Storage:        store,
 			AuthConfig:     authConfig,
-			Publisher:      eventRouter,
+			Publisher:      publisher,
 			ActivityLogger: activityLogger,
 			Providers:      providers,
 		}.Routes())
@@ -362,11 +449,19 @@ func StartHTTPServer(
 			DB:             db,
 			Storage:        store,
 			ActivityLogger: activityLogger,
-			Publisher:      eventRouter,
+			Publisher:      publisher,
 			JWTSecret:      authConfig.JWTSecret,
 		}.Routes())
 	})
 
+	return r
+}
+
+func StartHTTPServer(
+	config models.Configuration,
+	router chi.Router,
+	embeddedWebFS embed.FS,
+) (func(context.Context) error, <-chan error) {
 	if config.App.StaticFiles.Enabled {
 		webFS, err := fs.Sub(embeddedWebFS, "web/dist")
 		if err != nil {
@@ -381,7 +476,7 @@ func StartHTTPServer(
 		if err != nil {
 			zap.L().Fatal("failed to initialize static file service", zap.Error(err))
 		}
-		r.Mount("/", staticFileService.Routes())
+		router.Mount("/", staticFileService.Routes())
 		zap.L().Info("static file service enabled", zap.String("source", "embedded"))
 	} else {
 		zap.L().Info("static file service disabled")
@@ -389,24 +484,31 @@ func StartHTTPServer(
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.App.Port),
-		Handler:      r,
+		Handler:      router,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 		IdleTimeout:  5 * time.Second,
 	}
 
-	var err error
-	if config.App.TLSCertFile != "" {
-		zap.L().Info("TLS certificates provided, starting HTTPS server",
-			zap.Int("port", config.App.Port),
-			zap.String("cert", config.App.TLSCertFile),
-		)
-		err = server.ListenAndServeTLS(config.App.TLSCertFile, config.App.TLSKeyFile)
-	} else {
-		zap.L().Info("HTTP server starting", zap.Int("port", config.App.Port))
-		err = server.ListenAndServe()
-	}
-	if err != nil {
-		zap.L().Error("Failed to start the app", zap.Error(err))
-	}
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(errCh)
+		var err error
+		if config.App.TLSCertFile != "" {
+			zap.L().Info("TLS certificates provided, starting HTTPS server",
+				zap.Int("port", config.App.Port),
+				zap.String("cert", config.App.TLSCertFile),
+			)
+			err = server.ListenAndServeTLS(config.App.TLSCertFile, config.App.TLSKeyFile)
+		} else {
+			zap.L().Info("HTTP server starting", zap.Int("port", config.App.Port))
+			err = server.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			zap.L().Error("HTTP server exited", zap.Error(err))
+			errCh <- err
+		}
+	}()
+
+	return server.Shutdown, errCh
 }
