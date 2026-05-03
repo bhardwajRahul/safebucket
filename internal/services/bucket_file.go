@@ -158,7 +158,7 @@ func (s BucketFileService) PatchFile(
 	}
 
 	if file.ExpiresAt != nil && file.ExpiresAt.Before(time.Now()) {
-		return apierrors.NewAPIError(403, apierrors.ErrFileExpired)
+		return apierrors.NewAPIError(403, apierrors.CodeFileExpired)
 	}
 
 	switch body.Status {
@@ -239,7 +239,6 @@ func (s BucketFileService) HandleUploadedStatus(
 	})
 }
 
-// DeleteFile handles DELETE requests for permanent file deletion (purge).
 func (s BucketFileService) DeleteFile(
 	logger *zap.Logger,
 	user models.UserClaims,
@@ -265,14 +264,14 @@ func (s BucketFileService) DownloadFile(
 	if file.DeletedAt.Valid {
 		return models.FileTransferResponse{}, apierrors.NewAPIError(
 			403,
-			apierrors.ErrCannotDownloadTrashed,
+			apierrors.CodeCannotDownloadTrashed,
 		)
 	}
 
 	if file.ExpiresAt != nil && file.ExpiresAt.Before(time.Now()) {
 		return models.FileTransferResponse{}, apierrors.NewAPIError(
 			403,
-			apierrors.ErrFileExpired,
+			apierrors.CodeFileExpired,
 		)
 	}
 
@@ -315,7 +314,6 @@ func (s BucketFileService) DownloadFile(
 	}, nil
 }
 
-// TrashFile moves a file to trash (soft delete) with atomic status transition.
 func (s BucketFileService) TrashFile(
 	logger *zap.Logger,
 	user models.UserClaims,
