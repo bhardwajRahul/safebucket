@@ -6,7 +6,7 @@ import { MFA_CODE_LENGTH } from "../helpers/constants";
 import { MFADeviceSelector } from "./MFADeviceSelector";
 import { MFASuccessState } from "./MFASuccessState";
 import { MFAVerifyInput } from "./MFAVerifyInput";
-import type { IMFADevice } from "../helpers/types";
+import type { IMFADevice } from "@/components/auth-view/types/session";
 import { FormErrorAlert } from "@/components/common/FormErrorAlert";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,21 +16,21 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { useMFAAuth } from "@/context/MFAAuthContext";
 
 export interface IMFAVerificationViewProps {
   mfaToken: string;
   devices: Array<IMFADevice>;
   redirectPath?: string;
+  onClearAuth: () => void;
 }
 
 export function MFAVerificationView({
   mfaToken,
   devices,
   redirectPath,
+  onClearAuth,
 }: IMFAVerificationViewProps) {
   const { t } = useTranslation();
-  const { clearMFAAuth } = useMFAAuth();
 
   const {
     code,
@@ -46,7 +46,7 @@ export function MFAVerificationView({
     mfaToken,
     redirectPath,
     devices,
-    onClearDevices: clearMFAAuth,
+    onClearAuth,
   });
 
   if (isVerified) {

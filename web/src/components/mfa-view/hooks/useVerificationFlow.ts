@@ -3,21 +3,22 @@ import { useRouter } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { getDefaultDeviceId, isCodeValid } from "../helpers/utils";
 import { MFA_VERIFICATION_SUCCESS_DELAY } from "../helpers/constants";
-import type { IMFADevice, IVerificationFlowState } from "../helpers/types";
+import type { IMFADevice } from "@/components/auth-view/types/session";
+import type { IVerificationFlowState } from "../helpers/types";
 import { useLogin } from "@/hooks/useAuth";
 
 export interface IUseVerificationFlowProps {
   mfaToken: string;
   redirectPath?: string;
   devices: Array<IMFADevice>;
-  onClearDevices: () => void;
+  onClearAuth: () => void;
 }
 
 export function useVerificationFlow({
   mfaToken,
   redirectPath,
   devices,
-  onClearDevices,
+  onClearAuth,
 }: IUseVerificationFlowProps): IVerificationFlowState {
   const { t } = useTranslation();
   const router = useRouter();
@@ -55,7 +56,7 @@ export function useVerificationFlow({
     if (result.success) {
       setIsVerified(true);
       setTimeout(async () => {
-        onClearDevices();
+        onClearAuth();
         await router.invalidate();
         router.navigate({ to: redirectPath || "/", replace: true });
       }, MFA_VERIFICATION_SUCCESS_DELAY);
@@ -67,7 +68,7 @@ export function useVerificationFlow({
   };
 
   const handleBackToLogin = () => {
-    onClearDevices();
+    onClearAuth();
   };
 
   return {
