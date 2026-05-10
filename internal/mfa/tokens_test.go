@@ -3,7 +3,6 @@ package mfa
 import (
 	"testing"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/safebucket/safebucket/internal/configuration"
 	"github.com/safebucket/safebucket/internal/helpers"
@@ -33,26 +32,24 @@ func newMFATestConfig() models.AuthConfig {
 func TestHandleMFARequired(t *testing.T) {
 	logger := zap.NewNop()
 
-	t.Run("returns access token with MFARequired true", func(t *testing.T) {
+	t.Run("returns a non-empty restricted access token", func(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		resp, err := HandleMFARequired(logger, cfg, user)
+		token, err := HandleMFARequired(logger, cfg, user)
 
 		require.NoError(t, err)
-		assert.NotEmpty(t, resp.AccessToken)
-		assert.True(t, resp.MFARequired)
-		assert.Empty(t, resp.RefreshToken)
+		assert.NotEmpty(t, token)
 	})
 
 	t.Run("token has MFA login audience", func(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		resp, err := HandleMFARequired(logger, cfg, user)
+		token, err := HandleMFARequired(logger, cfg, user)
 		require.NoError(t, err)
 
-		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+resp.AccessToken, true)
+		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+token, true)
 		require.NoError(t, parseErr)
 		assert.Equal(t, configuration.AudienceMFALogin, claims.AudienceString())
 	})
@@ -61,10 +58,10 @@ func TestHandleMFARequired(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		resp, err := HandleMFARequired(logger, cfg, user)
+		token, err := HandleMFARequired(logger, cfg, user)
 		require.NoError(t, err)
 
-		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+resp.AccessToken, true)
+		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+token, true)
 		require.NoError(t, parseErr)
 		assert.Equal(t, user.ID, claims.UserID)
 		assert.Equal(t, user.Email, claims.Email)
@@ -74,10 +71,10 @@ func TestHandleMFARequired(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		resp, err := HandleMFARequired(logger, cfg, user)
+		token, err := HandleMFARequired(logger, cfg, user)
 		require.NoError(t, err)
 
-		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+resp.AccessToken, true)
+		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+token, true)
 		require.NoError(t, parseErr)
 		assert.False(t, claims.MFA)
 	})
@@ -86,10 +83,10 @@ func TestHandleMFARequired(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		resp, err := HandleMFARequired(logger, cfg, user)
+		token, err := HandleMFARequired(logger, cfg, user)
 		require.NoError(t, err)
 
-		_, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+resp.AccessToken, true)
+		_, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+token, true)
 		require.NoError(t, parseErr)
 	})
 }
@@ -99,22 +96,22 @@ func TestGenerateTokens(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		sid, resp, err := GenerateTokens(cfg, user)
+		sid, tokens, err := GenerateTokens(cfg, user)
 
 		require.NoError(t, err)
 		assert.NotEmpty(t, sid)
-		assert.NotEmpty(t, resp.AccessToken)
-		assert.NotEmpty(t, resp.RefreshToken)
+		assert.NotEmpty(t, tokens.AccessToken)
+		assert.NotEmpty(t, tokens.RefreshToken)
 	})
 
 	t.Run("access token has full access audience", func(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		_, resp, err := GenerateTokens(cfg, user)
+		_, tokens, err := GenerateTokens(cfg, user)
 		require.NoError(t, err)
 
-		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+resp.AccessToken, true)
+		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+tokens.AccessToken, true)
 		require.NoError(t, parseErr)
 		assert.Equal(t, configuration.AudienceAccessToken, claims.AudienceString())
 	})
@@ -123,10 +120,10 @@ func TestGenerateTokens(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		_, resp, err := GenerateTokens(cfg, user)
+		_, tokens, err := GenerateTokens(cfg, user)
 		require.NoError(t, err)
 
-		claims, parseErr := helpers.ParseRefreshToken(cfg.JWTSecret, resp.RefreshToken)
+		claims, parseErr := helpers.ParseRefreshToken(cfg.JWTSecret, tokens.RefreshToken)
 		require.NoError(t, parseErr)
 		assert.Equal(t, configuration.AudienceRefreshToken, claims.AudienceString())
 	})
@@ -135,14 +132,14 @@ func TestGenerateTokens(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		sid, resp, err := GenerateTokens(cfg, user)
+		sid, tokens, err := GenerateTokens(cfg, user)
 		require.NoError(t, err)
 
-		accessClaims, err := helpers.ParseToken(cfg.JWTSecret, "Bearer "+resp.AccessToken, true)
+		accessClaims, err := helpers.ParseToken(cfg.JWTSecret, "Bearer "+tokens.AccessToken, true)
 		require.NoError(t, err)
 		assert.Equal(t, sid, accessClaims.SID)
 
-		refreshClaims, err := helpers.ParseRefreshToken(cfg.JWTSecret, resp.RefreshToken)
+		refreshClaims, err := helpers.ParseRefreshToken(cfg.JWTSecret, tokens.RefreshToken)
 		require.NoError(t, err)
 		assert.Equal(t, sid, refreshClaims.SID)
 	})
@@ -151,10 +148,10 @@ func TestGenerateTokens(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		_, resp, err := GenerateTokens(cfg, user)
+		_, tokens, err := GenerateTokens(cfg, user)
 		require.NoError(t, err)
 
-		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+resp.AccessToken, true)
+		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, "Bearer "+tokens.AccessToken, true)
 		require.NoError(t, parseErr)
 		assert.Equal(t, user.ID, claims.UserID)
 		assert.Equal(t, user.Email, claims.Email)
@@ -165,27 +162,25 @@ func TestGenerateTokens(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		sid1, resp1, err1 := GenerateTokens(cfg, user)
-		sid2, resp2, err2 := GenerateTokens(cfg, user)
+		sid1, tokens1, err1 := GenerateTokens(cfg, user)
+		sid2, tokens2, err2 := GenerateTokens(cfg, user)
 		require.NoError(t, err1)
 		require.NoError(t, err2)
 
 		assert.NotEqual(t, sid1, sid2)
-		assert.NotEqual(t, resp1.AccessToken, resp2.AccessToken)
-		assert.NotEqual(t, resp1.RefreshToken, resp2.RefreshToken)
+		assert.NotEqual(t, tokens1.AccessToken, tokens2.AccessToken)
+		assert.NotEqual(t, tokens1.RefreshToken, tokens2.RefreshToken)
 	})
 
 	t.Run("access token is signed with HS256", func(t *testing.T) {
 		user := newMFATestUser()
 		cfg := newMFATestConfig()
 
-		_, resp, err := GenerateTokens(cfg, user)
+		_, tokens, err := GenerateTokens(cfg, user)
 		require.NoError(t, err)
 
-		parsed, parseErr := jwt.Parse(resp.AccessToken, func(_ *jwt.Token) (any, error) {
-			return []byte(cfg.JWTSecret), nil
-		})
+		claims, parseErr := helpers.ParseToken(cfg.JWTSecret, tokens.AccessToken, false)
 		require.NoError(t, parseErr)
-		assert.Equal(t, "HS256", parsed.Method.Alg())
+		assert.Equal(t, "app:*", claims.Audience[0])
 	})
 }

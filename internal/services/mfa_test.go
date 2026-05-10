@@ -42,7 +42,7 @@ func (m *MockCache) Close()                                                {}
 type MockNotifier struct {
 }
 
-func (m *MockNotifier) NotifyFromTemplate(_ string, _ string, _ string, _ interface{}) error {
+func (m *MockNotifier) NotifyFromTemplate(_ string, _ string, _ string, _ any) error {
 	return nil
 }
 
@@ -120,6 +120,7 @@ func TestVerifyDevice_Security_PrivilegeEscalation(t *testing.T) {
 		logger := zap.NewNop()
 
 		response, err := service.VerifyDevice(
+			false,
 			logger,
 			claims,
 			uuid.UUIDs{deviceID},
@@ -127,10 +128,10 @@ func TestVerifyDevice_Security_PrivilegeEscalation(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		authResponse, ok := response.(models.AuthLoginResponse)
-		require.True(t, ok)
+		mfaToken := cookieValue(response, "safebucket_mfa_token")
+		require.NotEmpty(t, mfaToken, "Password reset MFA verify should set the MFA cookie")
 
-		parsedClaims, err := helpers.ParseToken(jwtSecret, "Bearer "+authResponse.AccessToken, true)
+		parsedClaims, err := helpers.ParseToken(jwtSecret, mfaToken, false)
 		require.NoError(t, err, "Token should be parseable")
 
 		isRestrictedAudience := parsedClaims.Audience[0] == configuration.AudienceMFALogin ||
@@ -145,7 +146,8 @@ func TestVerifyDevice_Security_PrivilegeEscalation(t *testing.T) {
 			assert.True(t, parsedClaims.MFA, "Restricted token should have MFA=true")
 		}
 
-		assert.Empty(t, authResponse.RefreshToken, "Should not return Refresh Token for password reset flow")
+		assert.Empty(t, cookieValue(response, "safebucket_refresh_token"),
+			"Should not set the refresh cookie for password reset flow")
 	})
 }
 

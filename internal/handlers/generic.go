@@ -40,8 +40,6 @@ func spanName(fn any) string {
 	return parts[len(parts)-2] + "." + method
 }
 
-// recordError annotates the span with the error and HTTP status. Only 5xx
-// are promoted to span Error status; 4xx are client faults and stay unset.
 func recordError(span trace.Span, err error, status int) {
 	span.RecordError(err)
 	span.SetAttributes(attribute.Int("http.status_code", status))

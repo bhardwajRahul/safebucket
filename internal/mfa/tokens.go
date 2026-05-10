@@ -10,11 +10,16 @@ import (
 	"go.uber.org/zap"
 )
 
+type TokenPair struct {
+	AccessToken  string
+	RefreshToken string
+}
+
 func HandleMFARequired(
 	logger *zap.Logger,
 	authConfig models.AuthConfig,
 	user *models.User,
-) (models.AuthLoginResponse, error) {
+) (string, error) {
 	restrictedToken, err := h.NewRestrictedAccessToken(
 		authConfig.JWTSecret,
 		user,
@@ -24,19 +29,15 @@ func HandleMFARequired(
 	)
 	if err != nil {
 		logger.Error("Failed to generate restricted access token", zap.Error(err))
-		return models.AuthLoginResponse{}, apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
+		return "", apierrors.NewAPIError(500, "INTERNAL_SERVER_ERROR")
 	}
-
-	return models.AuthLoginResponse{
-		AccessToken: restrictedToken,
-		MFARequired: true,
-	}, nil
+	return restrictedToken, nil
 }
 
 func GenerateTokens(
 	authConfig models.AuthConfig,
 	user *models.User,
-) (string, models.AuthLoginResponse, error) {
+) (string, TokenPair, error) {
 	sid := uuid.New().String()
 
 	accessToken, err := h.NewAccessToken(
@@ -46,7 +47,7 @@ func GenerateTokens(
 		sid,
 	)
 	if err != nil {
-		return "", models.AuthLoginResponse{}, apierrors.ErrGenerateAccessTokenFailed
+		return "", TokenPair{}, apierrors.ErrGenerateAccessTokenFailed
 	}
 
 	refreshToken, err := h.NewRefreshToken(
@@ -56,8 +57,8 @@ func GenerateTokens(
 		sid,
 	)
 	if err != nil {
-		return "", models.AuthLoginResponse{}, apierrors.ErrGenerateRefreshTokenFailed
+		return "", TokenPair{}, apierrors.ErrGenerateRefreshTokenFailed
 	}
 
-	return sid, models.AuthLoginResponse{AccessToken: accessToken, RefreshToken: refreshToken}, nil
+	return sid, TokenPair{AccessToken: accessToken, RefreshToken: refreshToken}, nil
 }
