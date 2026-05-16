@@ -160,7 +160,6 @@ func (s *GenericS3Storage) RemoveObjects(paths []string) error {
 		return nil
 	}
 
-	// Some S3 API enforces max 1000 objects per DeleteObjects call
 	for i := 0; i < len(paths); i += c.BulkActionsLimit {
 		end := i + c.BulkActionsLimit
 		if end > len(paths) {
@@ -192,14 +191,11 @@ func (s *GenericS3Storage) RemoveObjects(paths []string) error {
 	return nil
 }
 
-// IsTrashMarkerPath checks if the given path is a trash marker and returns the original object path.
-// Generic S3 providers lack lifecycle policies, so the trash worker triggers the expiration manually.
 func (s *GenericS3Storage) IsTrashMarkerPath(markerPath string) (bool, string) {
 	if !strings.HasPrefix(markerPath, trashPrefix) {
 		return false, ""
 	}
 
-	// Remove "trash/" prefix
 	remainder := strings.TrimPrefix(markerPath, trashPrefix)
 	parts := strings.SplitN(remainder, "/", 3)
 
@@ -229,7 +225,7 @@ func (s *GenericS3Storage) UnmarkAsTrashed(_ string, _ any) error {
 // EnsureTrashLifecyclePolicy is a no-op for generic S3 providers.
 // Most S3-compatible providers (Storj, Hetzner, Backblaze B2, Garage) do not support lifecycle policies.
 func (s *GenericS3Storage) EnsureTrashLifecyclePolicy(retentionDays int) error {
-	zap.L().Warn("S3 provider does not support lifecycle policies - trash cleanup must be handled manually",
+	zap.L().Warn("S3 provider does not support lifecycle policies - trash cleanup is handled by async workers",
 		zap.String("bucket", s.BucketName),
 		zap.Int("configuredRetentionDays", retentionDays))
 	return nil
