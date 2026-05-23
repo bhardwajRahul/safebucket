@@ -1,26 +1,20 @@
 package apierrors
 
 const (
+	CodeBadRequest          = "BAD_REQUEST"
 	CodeForbidden           = "FORBIDDEN"
 	CodeUnauthorized        = "UNAUTHORIZED"
-	CodeInternalServerError = "INTERNAL_SERVER_ERROR"
-	CodeSessionRevoked      = "SESSION_REVOKED"
-	CodeBadRequest          = "BAD_REQUEST"
+	CodeNotFound            = "NOT_FOUND"
 	CodeInvalidUUID         = "INVALID_UUID"
+	CodeInvalidRequest      = "INVALID_REQUEST"
+	CodeInternalServerError = "INTERNAL_SERVER_ERROR"
+	CodeServiceUnavailable  = "SERVICE_UNAVAILABLE"
+	CodeRateLimitExceeded   = "RATE_LIMIT_EXCEEDED"
 )
 
-// HTTP 400 Bad Request.
 const (
-	CodeCannotDownloadTrashed = "CANNOT_DOWNLOAD_TRASHED_FILE"
-	CodeFolderNameConflict    = "FOLDER_NAME_CONFLICT"
-)
-
-// HTTP 403 Forbidden.
-const (
-	CodeFileExpired = "FILE_EXPIRED"
-)
-
-// HTTP 410 Gone.
-const (
-	CodeFolderTrashExpired = "FOLDER_TRASH_EXPIRED"
+	CodeCreateFailed = "CREATE_FAILED"
+	CodeUpdateFailed = "UPDATE_FAILED"
+	CodeDeleteFailed = "DELETE_FAILED"
+	CodeFetchFailed  = "FETCH_FAILED"
 )
