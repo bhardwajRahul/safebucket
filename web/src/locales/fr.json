@@ -764,6 +764,18 @@
       },
       "tooltip": {
         "object_deleted": "Cet objet a été supprimé"
+      },
+      "filters": {
+        "action": "Action",
+        "type": "Type"
+      },
+      "types": {
+        "bucket": "Bucket",
+        "file": "Fichier",
+        "folder": "Dossier",
+        "user": "Utilisateur",
+        "mfa_device": "Appareil MFA",
+        "share": "Partage"
       }
     }
   }
