@@ -379,6 +379,8 @@ func BuildAPIRouter(
 
 	authConfig := config.App.GetAuthConfig()
 
+	trustedProxies := configuration.ParseTrustedProxies(config.App.TrustedProxies)
+
 	r.Route("/api", func(apiRouter chi.Router) {
 		apiRouter.Use(m.CSRFGuard(config.App.AllowedOrigins))
 		apiRouter.Use(m.Authenticate(authConfig.TokenSecret, cache, configuration.RefreshTokenExpiry))
@@ -386,7 +388,7 @@ func BuildAPIRouter(
 		apiRouter.Use(m.MFAValidate(db, authConfig.MFARequired))
 		apiRouter.Use(m.RateLimit(
 			cache,
-			config.App.TrustedProxies,
+			trustedProxies,
 			config.App.AuthenticatedRequestsPerMinute,
 			config.App.UnauthenticatedRequestsPerMinute,
 		))

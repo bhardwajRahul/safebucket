@@ -3,6 +3,7 @@ package middlewares
 import (
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,7 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func getClientIP(r *http.Request, trustedProxies []string) (string, error) {
+func getClientIP(r *http.Request, trustedProxies []*net.IPNet) (string, error) {
 	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		if net.ParseIP(r.RemoteAddr) != nil {
@@ -25,31 +26,37 @@ func getClientIP(r *http.Request, trustedProxies []string) (string, error) {
 		}
 	}
 
-	if len(trustedProxies) == 0 {
-		return remoteIP, nil
-	}
-
-	isTrustedProxy := false
-	for _, proxy := range trustedProxies {
-		if remoteIP == proxy {
-			isTrustedProxy = true
-			break
-		}
-	}
-
-	if !isTrustedProxy {
+	if !isTrustedProxy(remoteIP, trustedProxies) {
 		return remoteIP, nil
 	}
 
 	xForwardedFor := r.Header.Get("X-Forwarded-For")
-	if xForwardedFor != "" {
-		ips := strings.Split(xForwardedFor, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0]), nil
+	if xForwardedFor == "" {
+		return remoteIP, nil
+	}
+
+	hops := strings.Split(xForwardedFor, ",")
+	for _, hop := range slices.Backward(hops) {
+		hop = strings.TrimSpace(hop)
+		if hop != "" && !isTrustedProxy(hop, trustedProxies) {
+			return hop, nil
 		}
 	}
 
 	return remoteIP, nil
+}
+
+func isTrustedProxy(ip string, trustedProxies []*net.IPNet) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, network := range trustedProxies {
+		if network.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyRateLimit(
@@ -79,7 +86,7 @@ func applyRateLimit(
 
 func RateLimit(
 	cache cache.ICache,
-	trustedProxies []string,
+	trustedProxies []*net.IPNet,
 	authenticatedRequestsPerMinute int,
 	unauthenticatedRequestsPerMinute int,
 ) func(next http.Handler) http.Handler {
