@@ -1,6 +1,6 @@
 //go:build integration
 
-package integration
+package bootstrap
 
 import "github.com/safebucket/safebucket/internal/models"
 

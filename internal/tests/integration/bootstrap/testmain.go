@@ -1,6 +1,6 @@
 //go:build integration
 
-package integration
+package bootstrap
 
 import (
 	"os"
@@ -9,12 +9,12 @@ import (
 	tclog "github.com/testcontainers/testcontainers-go/log"
 )
 
-func TestMain(m *testing.M) {
+func RunTestMain(m *testing.M) int {
 	if !integrationVerbose() {
 		tclog.SetDefault(silentTCLogger{})
 		_ = os.Setenv("TESTCONTAINERS_RYUK_VERBOSE", "false")
 	}
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 type silentTCLogger struct{}
