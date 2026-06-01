@@ -8,8 +8,28 @@ import (
 	"gorm.io/gorm"
 )
 
-// CreateUserWithInvites creates a user and processes any pending invites
-// Converting them to memberships in a single transaction.
+func FindUserByIdentityProvider(
+	db *gorm.DB,
+	email string,
+	providerType models.ProviderType,
+	providerKey string,
+	preloadMFA bool,
+) (models.User, bool, error) {
+	tx := db
+	if preloadMFA {
+		tx = tx.Preload("MFADevices", "is_verified = ?", true)
+	}
+
+	var user models.User
+	result := tx.Where("email = ? AND provider_type = ? AND provider_key = ?",
+		email, providerType, providerKey).
+		Find(&user)
+	if result.Error != nil {
+		return models.User{}, false, result.Error
+	}
+	return user, result.RowsAffected > 0, nil
+}
+
 func CreateUserWithInvites(
 	logger *zap.Logger,
 	db *gorm.DB,
