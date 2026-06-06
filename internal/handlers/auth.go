@@ -19,16 +19,23 @@ type (
 	OpenIDCallbackFunc func(context.Context, *zap.Logger, string, string, string) (string, string, error)
 )
 
+func providerKeyFromURL(r *http.Request) (string, error) {
+	key := chi.URLParam(r, "provider")
+	if err := h.ValidateProviderName(key); err != nil {
+		return "", apierrors.New(http.StatusBadRequest, apierrors.CodeInvalidProviderName)
+	}
+	return key, nil
+}
+
 func OpenIDBeginHandler(openidBegin OpenIDBeginFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, span := tracing.StartSpan(r.Context(), "handlers.OpenIDBegin")
 		defer span.End()
 		r = r.WithContext(ctx)
 
-		providerName := chi.URLParam(r, "provider")
-
-		if err := h.ValidateProviderName(providerName); err != nil {
-			h.RespondWithError(w, http.StatusBadRequest, []string{apierrors.CodeInvalidProviderName})
+		providerName, err := providerKeyFromURL(r)
+		if err != nil {
+			WriteError(span, w, err)
 			return
 		}
 
@@ -54,10 +61,9 @@ func OpenIDCallbackHandler(webURL string, cookieSecureForce bool, openidCallback
 		defer span.End()
 		r = r.WithContext(ctx)
 
-		providerName := chi.URLParam(r, "provider")
-
-		if err := h.ValidateProviderName(providerName); err != nil {
-			h.RespondWithError(w, http.StatusBadRequest, []string{apierrors.CodeInvalidProviderName})
+		providerName, err := providerKeyFromURL(r)
+		if err != nil {
+			WriteError(span, w, err)
 			return
 		}
 

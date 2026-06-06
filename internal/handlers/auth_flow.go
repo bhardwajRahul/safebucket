@@ -58,3 +58,43 @@ func AuthFlowHandler[In any](forceSecure bool, target AuthFlowTargetFunc[In]) ht
 		h.RespondWithJSON(w, result.Status, result.Body)
 	}
 }
+
+type AuthFlowProviderFunc[In any] func(
+	isSecure bool,
+	logger *zap.Logger,
+	providerKey string,
+	body In,
+) (AuthFlowResult, error)
+
+func AuthFlowProviderHandler[In any](forceSecure bool, target AuthFlowProviderFunc[In]) http.HandlerFunc {
+	name := spanName(target)
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := tracing.StartSpan(r.Context(), name)
+		defer span.End()
+		r = r.WithContext(ctx)
+
+		logger := m.GetLogger(r)
+
+		providerKey, err := providerKeyFromURL(r)
+		if err != nil {
+			WriteError(span, w, err)
+			return
+		}
+
+		body, ok := r.Context().Value(m.BodyKey{}).(In)
+		if !ok {
+			logger.Error("Failed to extract body from context")
+			h.RespondWithError(w, http.StatusInternalServerError, []string{apierrors.CodeInternalServerError})
+			return
+		}
+
+		result, err := target(isSecureRequest(r, forceSecure), logger, providerKey, body)
+		if err != nil {
+			WriteError(span, w, err)
+			return
+		}
+
+		writeCookies(w, result.Cookies)
+		h.RespondWithJSON(w, result.Status, result.Body)
+	}
+}
