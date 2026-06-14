@@ -1,6 +1,10 @@
 package configuration
 
 import (
+	"fmt"
+
+	"github.com/safebucket/safebucket/internal/models"
+
 	"github.com/knadh/koanf/v2"
 	"go.uber.org/zap"
 )
@@ -44,4 +48,35 @@ func migrateDeprecatedKeys(k *koanf.Koanf) {
 					zap.String("old_key", dk.oldKey), zap.String("new_key", dk.newKey))
 		}
 	}
+}
+
+func migrateGlobalMFARequired(k *koanf.Koanf) {
+	const oldKey = "app.mfa_required"
+	if !k.Exists(oldKey) {
+		return
+	}
+
+	if k.Bool(oldKey) {
+		for _, name := range k.MapKeys("auth.providers") {
+			if k.String(fmt.Sprintf("auth.providers.%s.type", name)) != string(models.LocalProviderType) {
+				continue
+			}
+			newKey := fmt.Sprintf("auth.providers.%s.mfa_required", name)
+			if k.Exists(newKey) {
+				continue
+			}
+			if err := k.Set(newKey, true); err != nil {
+				zap.L().Error("Failed to migrate deprecated configuration key", zap.Error(err))
+				continue
+			}
+		}
+
+		zap.L().Warn(
+			"Deprecated configuration key used, please migrate",
+			zap.String("old_key", oldKey),
+			zap.String("new_key", "auth.providers.<local>.mfa_required"),
+		)
+	}
+
+	k.Delete(oldKey)
 }

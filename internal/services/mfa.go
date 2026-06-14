@@ -1,10 +1,13 @@
 package services
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/safebucket/safebucket/internal/activity"
+	ldapclient "github.com/safebucket/safebucket/internal/auth/ldap"
 	"github.com/safebucket/safebucket/internal/cache"
 	"github.com/safebucket/safebucket/internal/configuration"
 	apierrors "github.com/safebucket/safebucket/internal/errors"
@@ -16,6 +19,7 @@ import (
 	"github.com/safebucket/safebucket/internal/models"
 	"github.com/safebucket/safebucket/internal/notifier"
 	"github.com/safebucket/safebucket/internal/rbac"
+	"github.com/safebucket/safebucket/internal/sql"
 
 	"github.com/alexedwards/argon2id"
 	"github.com/go-chi/chi/v5"
@@ -29,6 +33,7 @@ type MFAService struct {
 	DB             *gorm.DB
 	Cache          cache.ICache
 	AuthConfig     models.AuthConfig
+	Providers      configuration.Providers
 	Publisher      messaging.IPublisher
 	Notifier       notifier.INotifier
 	ActivityLogger activity.IActivityLogger
@@ -87,14 +92,13 @@ func (s MFAService) AddDevice(
 ) (models.MFADeviceSetupResponse, error) {
 	userID := claims.UserID
 
-	var user models.User
-	result := s.DB.Where("id = ? AND provider_type = ?", userID, models.LocalProviderType).First(&user)
-	if result.RowsAffected == 0 {
-		return models.MFADeviceSetupResponse{}, apierrors.New(http.StatusNotFound, apierrors.CodeUserNotFound)
+	user, err := sql.GetUserByID(s.DB, userID)
+	if err != nil {
+		return models.MFADeviceSetupResponse{}, err
 	}
 
 	var count int64
-	result = s.DB.Model(&models.MFADevice{}).Where("user_id = ?", userID).Count(&count)
+	result := s.DB.Model(&models.MFADevice{}).Where("user_id = ?", userID).Count(&count)
 	if result.Error != nil {
 		logger.Error("Failed to count MFA devices", zap.Error(result.Error))
 		return models.MFADeviceSetupResponse{}, result.Error
@@ -107,13 +111,10 @@ func (s MFAService) AddDevice(
 		claims.AudienceString() == configuration.AudienceMFAReset
 
 	if isRestricted {
-		var verifiedCount int64
-		result = s.DB.Model(&models.MFADevice{}).
-			Where("user_id = ? AND is_verified = ?", userID, true).
-			Count(&verifiedCount)
-		if result.Error != nil {
-			logger.Error("Failed to count verified MFA devices", zap.Error(result.Error))
-			return models.MFADeviceSetupResponse{}, result.Error
+		verifiedCount, countErr := sql.CountVerifiedMFADevices(s.DB, userID)
+		if countErr != nil {
+			logger.Error("Failed to count verified MFA devices", zap.Error(countErr))
+			return models.MFADeviceSetupResponse{}, countErr
 		}
 		if verifiedCount > 0 {
 			logger.Warn("restricted token used for non-initial device setup",
@@ -125,22 +126,8 @@ func (s MFAService) AddDevice(
 			)
 		}
 	} else {
-		if body.Password == "" {
-			return models.MFADeviceSetupResponse{}, apierrors.New(http.StatusBadRequest, apierrors.CodeBadRequest)
-		}
-
-		match, err := argon2id.ComparePasswordAndHash(body.Password, user.HashedPassword)
-		if err != nil {
-			logger.Error("failed to compare password and hash", zap.Error(err))
-			return models.MFADeviceSetupResponse{}, apierrors.New(http.StatusBadRequest, apierrors.CodeBadRequest)
-		}
-		if !match {
-			logger.Warn(
-				"invalid password provided for device enrollment",
-				zap.String("userID", claims.UserID.String()),
-			)
-			return models.MFADeviceSetupResponse{},
-				apierrors.New(http.StatusUnauthorized, apierrors.CodeInvalidPassword)
+		if err = s.verifyAddDeviceStepUp(logger, &user, body.Password, body.Code); err != nil {
+			return models.MFADeviceSetupResponse{}, err
 		}
 	}
 
@@ -243,13 +230,12 @@ func (s MFAService) VerifyDevice(
 	var deviceName string
 
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		result := tx.Where("id = ? AND provider_type = ?", userID, models.LocalProviderType).Find(&user)
-		if result.RowsAffected == 0 {
-			return apierrors.New(http.StatusNotFound, apierrors.CodeUserNotFound)
+		if _, err := sql.GetUserByID(tx, userID); err != nil {
+			return err
 		}
 
 		var device models.MFADevice
-		result = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND user_id = ?", deviceID, userID).
 			First(&device)
 		if result.RowsAffected == 0 {
@@ -419,7 +405,7 @@ func (s MFAService) VerifyDevice(
 			isSecure,
 			tokens.AccessToken,
 			tokens.RefreshToken,
-			string(models.LocalProviderType),
+			user.ProviderKey,
 		),
 	}, nil
 }
@@ -438,14 +424,12 @@ func (s MFAService) UpdateDevice(
 	deviceID := ids[0]
 
 	return s.DB.Transaction(func(tx *gorm.DB) error {
-		var user models.User
-		result := tx.Where("id = ? AND provider_type = ?", userID, models.LocalProviderType).Find(&user)
-		if result.RowsAffected == 0 {
-			return apierrors.New(http.StatusNotFound, apierrors.CodeUserNotFound)
+		if _, err := sql.GetUserByID(tx, userID); err != nil {
+			return err
 		}
 
 		var device models.MFADevice
-		result = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND user_id = ?", deviceID, userID).
 			Find(&device)
 		if result.RowsAffected == 0 {
@@ -511,41 +495,44 @@ func (s MFAService) RemoveDevice(
 	userID := claims.UserID
 	deviceID := ids[0]
 
-	var user models.User
+	user, err := sql.GetUserByID(s.DB, userID)
+	if err != nil {
+		return err
+	}
+
+	var device models.MFADevice
+	result := s.DB.Where("id = ? AND user_id = ?", deviceID, userID).First(&device)
+	if result.RowsAffected == 0 {
+		return apierrors.New(http.StatusNotFound, apierrors.CodeMFADeviceNotFound)
+	}
+	stepUpDone := device.IsVerified
+	if stepUpDone {
+		if err = s.verifyMFAStepUp(logger, &user, body.Password, body.Code); err != nil {
+			return err
+		}
+	}
+
 	var deviceName string
 
-	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		result := tx.Where("id = ? AND provider_type = ?", userID, models.LocalProviderType).First(&user)
-		if result.RowsAffected == 0 {
-			return apierrors.New(http.StatusNotFound, apierrors.CodeUserNotFound)
-		}
-
-		match, err := argon2id.ComparePasswordAndHash(body.Password, user.HashedPassword)
-		if err != nil {
-			logger.Error("Failed to verify password", zap.Error(err))
-			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
-		}
-		if !match {
-			logger.Warn("MFA device removal failed - invalid password",
-				zap.String("user_id", userID.String()),
-				zap.String("device_id", deviceID.String()))
-			return apierrors.New(http.StatusUnauthorized, apierrors.CodeInvalidPassword)
-		}
-
-		var device models.MFADevice
-		result = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		var locked models.MFADevice
+		lockResult := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND user_id = ?", deviceID, userID).
-			First(&device)
-		if result.RowsAffected == 0 {
+			First(&locked)
+		if lockResult.RowsAffected == 0 {
 			return apierrors.New(http.StatusNotFound, apierrors.CodeMFADeviceNotFound)
 		}
 
-		deviceName = device.Name
-		wasDefault := device.IsDefault
-		wasVerified := device.IsVerified
+		if locked.IsVerified && !stepUpDone {
+			return apierrors.New(http.StatusBadRequest, apierrors.CodeBadRequest)
+		}
 
-		if err = tx.Delete(&device).Error; err != nil {
-			return err
+		deviceName = locked.Name
+		wasDefault := locked.IsDefault
+		wasVerified := locked.IsVerified
+
+		if delErr := tx.Delete(&locked).Error; delErr != nil {
+			return delErr
 		}
 
 		if wasDefault && wasVerified {
@@ -561,7 +548,7 @@ func (s MFAService) RemoveDevice(
 
 		action := models.Activity{
 			Message: activity.MFADeviceRemoved,
-			Object:  device.ToActivity(),
+			Object:  locked.ToActivity(),
 			Filter: activity.NewLogFilter(models.ActivityFields{
 				Action:     activity.MFADeviceRemoved,
 				UserID:     userID.String(),
@@ -602,4 +589,133 @@ func (s MFAService) RemoveDevice(
 	}()
 
 	return nil
+}
+
+func (s MFAService) verifyMFAStepUp(logger *zap.Logger, user *models.User, password, code string) error {
+	if user.ProviderType == models.OIDCProviderType {
+		return s.verifyTOTPStepUp(logger, user, code)
+	}
+	return s.verifyProviderPassword(logger, user, password)
+}
+
+func (s MFAService) verifyTOTPStepUp(logger *zap.Logger, user *models.User, code string) error {
+	if strings.TrimSpace(code) == "" {
+		return apierrors.New(http.StatusBadRequest, apierrors.CodeBadRequest)
+	}
+
+	var devices []models.MFADevice
+	result := s.DB.Where("user_id = ? AND is_verified = ?", user.ID, true).Find(&devices)
+	if result.Error != nil {
+		logger.Error("Failed to load verified MFA devices for step-up", zap.Error(result.Error))
+		return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+	}
+	if len(devices) == 0 {
+		return apierrors.New(http.StatusBadRequest, apierrors.CodeMFANotEnabled)
+	}
+
+	attempts, err := cache.GetMFAAttempts(s.Cache, user.ID.String())
+	if err != nil {
+		logger.Error("Rate limit check failed - denying request", zap.Error(err))
+		return apierrors.New(http.StatusServiceUnavailable, apierrors.CodeServiceUnavailable)
+	}
+	if attempts >= configuration.MFAMaxAttempts {
+		logger.Warn("MFA step-up rate limited", zap.String("user_id", user.ID.String()))
+		return apierrors.New(http.StatusTooManyRequests, apierrors.CodeMFARateLimited)
+	}
+
+	for i := range devices {
+		secret, decErr := h.DecryptSecret(devices[i].EncryptedSecret, []byte(s.AuthConfig.MFAEncryptionKey))
+		if decErr != nil {
+			logger.Error("Failed to decrypt TOTP secret for step-up", zap.Error(decErr))
+			continue
+		}
+		if !h.ValidateTOTPCode(secret, code) {
+			continue
+		}
+
+		unused, usedErr := cache.MarkTOTPCodeUsed(s.Cache, devices[i].ID.String(), code)
+		if usedErr != nil {
+			logger.Error("Failed to mark TOTP code as used", zap.Error(usedErr))
+			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+		}
+		if !unused {
+			logger.Warn("TOTP code replay attempt detected during step-up",
+				zap.String("device_id", devices[i].ID.String()))
+			return apierrors.New(http.StatusUnauthorized, apierrors.CodeInvalidMFACode)
+		}
+
+		if resetErr := cache.ResetMFAAttempts(s.Cache, user.ID.String()); resetErr != nil {
+			logger.Error("Failed to reset MFA attempts", zap.Error(resetErr))
+		}
+		return nil
+	}
+
+	if incErr := cache.IncrementMFAAttempts(s.Cache, user.ID.String()); incErr != nil {
+		logger.Error("Failed to increment MFA attempts", zap.Error(incErr))
+	}
+	logger.Warn("Invalid TOTP code for MFA step-up", zap.String("user_id", user.ID.String()))
+	return apierrors.New(http.StatusUnauthorized, apierrors.CodeInvalidMFACode)
+}
+
+func (s MFAService) verifyAddDeviceStepUp(logger *zap.Logger, user *models.User, password, code string) error {
+	if user.ProviderType == models.OIDCProviderType {
+		verifiedCount, err := sql.CountVerifiedMFADevices(s.DB, user.ID)
+		if err != nil {
+			logger.Error("Failed to count verified MFA devices for step-up", zap.Error(err))
+			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+		}
+		if verifiedCount == 0 {
+			return nil
+		}
+		return s.verifyTOTPStepUp(logger, user, code)
+	}
+	return s.verifyProviderPassword(logger, user, password)
+}
+
+func (s MFAService) verifyProviderPassword(logger *zap.Logger, user *models.User, password string) error {
+	switch user.ProviderType {
+	case models.LocalProviderType:
+		if password == "" {
+			return apierrors.New(http.StatusBadRequest, apierrors.CodeBadRequest)
+		}
+		match, err := argon2id.ComparePasswordAndHash(password, user.HashedPassword)
+		if err != nil {
+			logger.Error("Failed to compare password and hash", zap.Error(err))
+			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+		}
+		if !match {
+			logger.Warn("Invalid password provided for MFA operation", zap.String("user_id", user.ID.String()))
+			return apierrors.New(http.StatusUnauthorized, apierrors.CodeInvalidPassword)
+		}
+		return nil
+
+	case models.LDAPProviderType:
+		if strings.TrimSpace(password) == "" {
+			return apierrors.New(http.StatusBadRequest, apierrors.CodeBadRequest)
+		}
+		provider, ok := s.Providers[user.ProviderKey]
+		if !ok || provider.Type != models.LDAPProviderType || provider.LDAPConfig == nil {
+			logger.Error("LDAP provider not found for MFA re-auth", zap.String("provider", user.ProviderKey))
+			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+		}
+		if _, err := ldapclient.AuthenticateAndFetch(*provider.LDAPConfig, user.Email, password); err != nil {
+			if errors.Is(err, ldapclient.ErrInvalidCredentials) {
+				logger.Warn("Invalid LDAP credentials for MFA operation", zap.String("user_id", user.ID.String()))
+				return apierrors.New(http.StatusUnauthorized, apierrors.CodeInvalidPassword)
+			}
+			logger.Error("LDAP re-auth failed for MFA operation",
+				zap.String("provider", user.ProviderKey), zap.Error(err))
+			return apierrors.New(http.StatusServiceUnavailable, apierrors.CodeAuthProviderUnavailable)
+		}
+		return nil
+
+	case models.OIDCProviderType:
+		logger.Error("verifyProviderPassword reached for OIDC user", zap.String("user_id", user.ID.String()))
+		return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+
+	default:
+		logger.Error("Unsupported provider type for password MFA re-auth",
+			zap.String("provider_type", string(user.ProviderType)))
+		return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+	}
 }

@@ -23,6 +23,12 @@ import (
 
 const mfaTestJWTSecret = "test-secret-key-for-mfa-testing"
 
+func localMFARequiredProviders() configuration.Providers {
+	return configuration.Providers{
+		string(models.LocalProviderType): {Type: models.LocalProviderType, MFARequired: true},
+	}
+}
+
 func generateRestrictedToken(secret string, user *models.User, audience string, mfaVerified bool) (string, error) {
 	return helpers.NewRestrictedAccessToken(secret, user, audience, mfaVerified, nil)
 }
@@ -31,8 +37,19 @@ func generateFullAccessToken(user *models.User) (string, error) {
 	return helpers.NewAccessToken(mfaTestJWTSecret, user, string(models.LocalProviderType), "")
 }
 
+func newGormWithMock(t *testing.T) (*gorm.DB, sqlmock.Sqlmock, *sql.DB) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: db}), &gorm.Config{})
+	require.NoError(t, err)
+
+	return gormDB, mock, db
+}
+
 func TestMFAValidate_MFAEnforcement(t *testing.T) {
-	t.Run("should require MFA setup for local user without MFA when mfaRequired is true", func(t *testing.T) {
+	t.Run("should require MFA setup for local user without MFA when the provider enforces it", func(t *testing.T) {
 		testUser := &models.User{
 			ID:           uuid.New(),
 			Email:        "test@example.com",
@@ -54,16 +71,21 @@ func TestMFAValidate_MFAEnforcement(t *testing.T) {
 		ctx := context.WithValue(req.Context(), models.UserClaimKey{}, claims)
 		req = req.WithContext(ctx)
 
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
+		handler := MFAValidate(
+			nil,
+			localMFARequiredProviders(),
+		)(
+			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}),
+		)
 		handler.ServeHTTP(recorder, req)
 
 		expected := models.Error{Status: http.StatusForbidden, Error: []string{"FORBIDDEN"}}
 		tests.AssertJSONResponse(t, recorder, http.StatusForbidden, expected)
 	})
 
-	t.Run("should allow user with MFA enabled when mfaRequired is true", func(t *testing.T) {
+	t.Run("should allow user whose token already verified MFA", func(t *testing.T) {
 		testUser := &models.User{
 			ID:           uuid.New(),
 			Email:        "test@example.com",
@@ -89,7 +111,7 @@ func TestMFAValidate_MFAEnforcement(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -99,7 +121,7 @@ func TestMFAValidate_MFAEnforcement(t *testing.T) {
 		assert.Equal(t, http.StatusOK, recorder.Code)
 	})
 
-	t.Run("should not require MFA when mfaRequired is false", func(t *testing.T) {
+	t.Run("should not require MFA when no provider enforcement and no enrolled device", func(t *testing.T) {
 		testUser := &models.User{
 			ID:           uuid.New(),
 			Email:        "test@example.com",
@@ -122,7 +144,7 @@ func TestMFAValidate_MFAEnforcement(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -155,7 +177,7 @@ func TestMFAValidate_RestrictedTokensSkipMFAEnforcement(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -171,7 +193,7 @@ func TestMFAValidate_NoClaims(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/buckets", nil)
 		recorder := httptest.NewRecorder()
 
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(recorder, req)
@@ -190,7 +212,7 @@ func TestMFAValidate_AuthExcluded(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -201,8 +223,8 @@ func TestMFAValidate_AuthExcluded(t *testing.T) {
 	})
 }
 
-func TestMFAValidate_OAuthUsersSkipMFA(t *testing.T) {
-	t.Run("should not require MFA for OAuth users even when mfaRequired is true", func(t *testing.T) {
+func TestMFAValidate_NonLocalNoRequirement(t *testing.T) {
+	t.Run("should allow a non-local user when the provider does not require MFA", func(t *testing.T) {
 		testUser := &models.User{
 			ID:           uuid.New(),
 			Email:        "oauth@example.com",
@@ -223,13 +245,62 @@ func TestMFAValidate_OAuthUsersSkipMFA(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(recorder, req)
 
-		assert.True(t, nextCalled, "Next handler should be called for OAuth users")
+		assert.True(t, nextCalled, "Next handler should be called when the provider does not require MFA")
+		assert.Equal(t, http.StatusOK, recorder.Code)
+	})
+}
+
+func TestMFAValidate_OIDCProviderRequiresMFA(t *testing.T) {
+	providers := configuration.Providers{
+		"google": {Type: models.OIDCProviderType, MFARequired: true},
+		"okta":   {Type: models.OIDCProviderType, MFARequired: false},
+	}
+
+	newReq := func(t *testing.T, providerKey string) *http.Request {
+		t.Helper()
+		testUser := &models.User{
+			ID:           uuid.New(),
+			Email:        "oidc@example.com",
+			Role:         models.RoleUser,
+			ProviderType: models.OIDCProviderType,
+		}
+		token, err := helpers.NewAccessToken(mfaTestJWTSecret, testUser, providerKey, "")
+		require.NoError(t, err)
+		claims, err := helpers.ParseToken(mfaTestJWTSecret, "Bearer "+token, true)
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/buckets", nil)
+		return req.WithContext(context.WithValue(req.Context(), models.UserClaimKey{}, claims))
+	}
+
+	t.Run("should block OIDC user when provider enforces MFA and token lacks MFA", func(t *testing.T) {
+		var nextCalled bool
+		handler := MFAValidate(nil, providers)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, newReq(t, "google"))
+
+		assert.False(t, nextCalled)
+		assert.Equal(t, http.StatusForbidden, recorder.Code)
+	})
+
+	t.Run("should skip OIDC user when provider does not enforce MFA", func(t *testing.T) {
+		var nextCalled bool
+		handler := MFAValidate(nil, providers)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, newReq(t, "okta"))
+
+		assert.True(t, nextCalled)
 		assert.Equal(t, http.StatusOK, recorder.Code)
 	})
 }
@@ -271,6 +342,9 @@ func TestIsMFABypassPath(t *testing.T) {
 
 func TestMFAValidate_TokenUserStateMismatch(t *testing.T) {
 	t.Run("should enforce MFA when user has devices but token claims MFA false", func(t *testing.T) {
+		gormDB, mock, db := newGormWithMock(t)
+		defer func(db *sql.DB) { _ = db.Close() }(db)
+
 		testUser := &models.User{
 			ID:           uuid.New(),
 			Email:        "test@example.com",
@@ -286,19 +360,25 @@ func TestMFAValidate_TokenUserStateMismatch(t *testing.T) {
 		require.Equal(t, configuration.AudienceAccessToken, claims.Audience[0])
 		assert.False(t, claims.MFA, "Token should have MFA=false since user had no devices at token creation")
 
+		rows := sqlmock.NewRows([]string{"count"}).AddRow(1)
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT count(*) FROM "mfa_devices" WHERE user_id = $1 AND is_verified = $2`)).
+			WithArgs(testUser.ID, true).
+			WillReturnRows(rows)
+
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/buckets", nil)
 		recorder := httptest.NewRecorder()
 
 		ctx := context.WithValue(req.Context(), models.UserClaimKey{}, claims)
 		req = req.WithContext(ctx)
 
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(gormDB, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(recorder, req)
 
 		expected := models.Error{Status: http.StatusForbidden, Error: []string{"FORBIDDEN"}}
 		tests.AssertJSONResponse(t, recorder, http.StatusForbidden, expected)
+		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
 	t.Run("should allow when claims MFA is true even if devices were removed", func(t *testing.T) {
@@ -327,7 +407,7 @@ func TestMFAValidate_TokenUserStateMismatch(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -360,13 +440,13 @@ func TestMFAValidate_ProviderTypeMismatch(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(recorder, req)
 
-		assert.True(t, nextCalled, "OAuth users should bypass MFA enforcement")
+		assert.True(t, nextCalled, "non-local user without a provider MFA requirement is allowed")
 		assert.Equal(t, http.StatusOK, recorder.Code)
 	})
 }
@@ -393,7 +473,7 @@ func TestMFAValidate_CrossFlowTokenAccess(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -483,6 +563,8 @@ func TestMFAValidate_BypassPath(t *testing.T) {
 		{ExactPath: "/api/v1/health", Method: "GET"},
 	})
 
+	providers := localMFARequiredProviders()
+
 	t.Run("should allow user without MFA on bypass path", func(t *testing.T) {
 		testUser := &models.User{
 			ID:           uuid.New(),
@@ -506,7 +588,7 @@ func TestMFAValidate_BypassPath(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, providers)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -537,7 +619,7 @@ func TestMFAValidate_BypassPath(t *testing.T) {
 		ctx := context.WithValue(req.Context(), models.UserClaimKey{}, claims)
 		req = req.WithContext(ctx)
 
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, providers)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(recorder, req)
@@ -567,7 +649,7 @@ func TestMFAValidate_BypassPath(t *testing.T) {
 		ctx := context.WithValue(req.Context(), models.UserClaimKey{}, claims)
 		req = req.WithContext(ctx)
 
-		handler := MFAValidate(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(nil, providers)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(recorder, req)
@@ -579,16 +661,8 @@ func TestMFAValidate_BypassPath(t *testing.T) {
 
 func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 	t.Run("should block local user with MFA=false token when user has enrolled MFA", func(t *testing.T) {
-		db, mock, err := sqlmock.New()
-		require.NoError(t, err)
-		defer func(db *sql.DB) {
-			_ = db.Close()
-		}(db)
-
-		gormDB, err := gorm.Open(postgres.New(postgres.Config{
-			Conn: db,
-		}), &gorm.Config{})
-		require.NoError(t, err)
+		gormDB, mock, db := newGormWithMock(t)
+		defer func(db *sql.DB) { _ = db.Close() }(db)
 
 		testUser := &models.User{
 			ID:           uuid.New(),
@@ -615,7 +689,7 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 		ctx := context.WithValue(req.Context(), models.UserClaimKey{}, claims)
 		req = req.WithContext(ctx)
 
-		handler := MFAValidate(gormDB, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(gormDB, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(recorder, req)
@@ -626,16 +700,8 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 	})
 
 	t.Run("should allow local user with MFA=false token when user has no MFA enrolled", func(t *testing.T) {
-		db, mock, err := sqlmock.New()
-		require.NoError(t, err)
-		defer func(db *sql.DB) {
-			_ = db.Close()
-		}(db)
-
-		gormDB, err := gorm.Open(postgres.New(postgres.Config{
-			Conn: db,
-		}), &gorm.Config{})
-		require.NoError(t, err)
+		gormDB, mock, db := newGormWithMock(t)
+		defer func(db *sql.DB) { _ = db.Close() }(db)
 
 		testUser := &models.User{
 			ID:           uuid.New(),
@@ -662,7 +728,7 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(gormDB, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(gormDB, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -673,17 +739,9 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
-	t.Run("should not check DB for OAuth users", func(t *testing.T) {
-		db, mock, err := sqlmock.New()
-		require.NoError(t, err)
-		defer func(db *sql.DB) {
-			_ = db.Close()
-		}(db)
-
-		gormDB, err := gorm.Open(postgres.New(postgres.Config{
-			Conn: db,
-		}), &gorm.Config{})
-		require.NoError(t, err)
+	t.Run("should check enrolled devices for non-local providers", func(t *testing.T) {
+		gormDB, mock, db := newGormWithMock(t)
+		defer func(db *sql.DB) { _ = db.Close() }(db)
 
 		testUser := &models.User{
 			ID:           uuid.New(),
@@ -697,6 +755,12 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 
 		claims, err := helpers.ParseToken(mfaTestJWTSecret, "Bearer "+token, true)
 		require.NoError(t, err)
+		require.False(t, claims.MFA)
+
+		rows := sqlmock.NewRows([]string{"count"}).AddRow(1)
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT count(*) FROM "mfa_devices" WHERE user_id = $1 AND is_verified = $2`)).
+			WithArgs(testUser.ID, true).
+			WillReturnRows(rows)
 
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/buckets", nil)
 		recorder := httptest.NewRecorder()
@@ -704,29 +768,19 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 		ctx := context.WithValue(req.Context(), models.UserClaimKey{}, claims)
 		req = req.WithContext(ctx)
 
-		var nextCalled bool
-		handler := MFAValidate(gormDB, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			nextCalled = true
+		handler := MFAValidate(gormDB, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(recorder, req)
 
-		assert.True(t, nextCalled, "Next handler should be called for OAuth users without DB check")
-		assert.Equal(t, http.StatusOK, recorder.Code)
+		expected := models.Error{Status: http.StatusForbidden, Error: []string{"FORBIDDEN"}}
+		tests.AssertJSONResponse(t, recorder, http.StatusForbidden, expected)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
 	t.Run("should not check DB when token has MFA=true", func(t *testing.T) {
-		db, mock, err := sqlmock.New()
-		require.NoError(t, err)
-		defer func(db *sql.DB) {
-			_ = db.Close()
-		}(db)
-
-		gormDB, err := gorm.Open(postgres.New(postgres.Config{
-			Conn: db,
-		}), &gorm.Config{})
-		require.NoError(t, err)
+		gormDB, mock, db := newGormWithMock(t)
+		defer func(db *sql.DB) { _ = db.Close() }(db)
 
 		testUser := &models.User{
 			ID:           uuid.New(),
@@ -752,7 +806,7 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
-		handler := MFAValidate(gormDB, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := MFAValidate(gormDB, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -763,17 +817,9 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
-	t.Run("should not check DB when mfaRequired=true", func(t *testing.T) {
-		db, mock, err := sqlmock.New()
-		require.NoError(t, err)
-		defer func(db *sql.DB) {
-			_ = db.Close()
-		}(db)
-
-		gormDB, err := gorm.Open(postgres.New(postgres.Config{
-			Conn: db,
-		}), &gorm.Config{})
-		require.NoError(t, err)
+	t.Run("should not check DB when the provider enforces MFA", func(t *testing.T) {
+		gormDB, mock, db := newGormWithMock(t)
+		defer func(db *sql.DB) { _ = db.Close() }(db)
 
 		testUser := &models.User{
 			ID:           uuid.New(),
@@ -795,9 +841,14 @@ func TestMFAValidate_EnrollmentCheck(t *testing.T) {
 		ctx := context.WithValue(req.Context(), models.UserClaimKey{}, claims)
 		req = req.WithContext(ctx)
 
-		handler := MFAValidate(gormDB, true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
+		handler := MFAValidate(
+			gormDB,
+			localMFARequiredProviders(),
+		)(
+			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}),
+		)
 		handler.ServeHTTP(recorder, req)
 
 		expected := models.Error{Status: http.StatusForbidden, Error: []string{"FORBIDDEN"}}

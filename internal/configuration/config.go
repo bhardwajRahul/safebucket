@@ -208,6 +208,7 @@ func Load(opts LoadOptions) (models.Configuration, error) {
 		readEnvVars(k)
 	}
 	migrateDeprecatedKeys(k)
+	migrateGlobalMFARequired(k)
 	loadConditionalDefaults(k)
 
 	var cfg models.Configuration

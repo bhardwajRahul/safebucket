@@ -99,7 +99,7 @@ func (s AuthService) Login(
 		return handlers.AuthFlowResult{}, apierrors.New(http.StatusUnauthorized, apierrors.CodeInvalidCredentials)
 	}
 
-	return s.finalizeLogin(isSecure, logger, &user, provider.Type, provider.Name)
+	return s.finalizeLogin(isSecure, logger, &user, provider.Type, provider.Name, provider.MFARequired)
 }
 
 func (s AuthService) finalizeLogin(
@@ -108,11 +108,12 @@ func (s AuthService) finalizeLogin(
 	user *models.User,
 	providerType models.ProviderType,
 	providerName string,
+	providerMFARequired bool,
 ) (handlers.AuthFlowResult, error) {
 	verifiedDevices := user.GetVerifiedDevices()
 	hasMFA := len(verifiedDevices) > 0
 
-	if hasMFA || s.AuthConfig.MFARequired {
+	if hasMFA || providerMFARequired {
 		restrictedToken, mfaErr := mfa.HandleMFARequired(logger, s.AuthConfig, user)
 		if mfaErr != nil {
 			return handlers.AuthFlowResult{}, mfaErr
@@ -387,7 +388,7 @@ func (s AuthService) VerifyMFALogin(
 ) (handlers.AuthFlowResult, error) {
 	var user models.User
 	result := s.DB.Preload("MFADevices", "is_verified = ?", true).
-		Where("id = ? AND provider_type = ?", claims.UserID, models.LocalProviderType).
+		Where("id = ?", claims.UserID).
 		First(&user)
 	if result.RowsAffected == 0 {
 		return handlers.AuthFlowResult{}, apierrors.New(http.StatusNotFound, apierrors.CodeUserNotFound)
@@ -488,6 +489,21 @@ func (s AuthService) VerifyMFALogin(
 			http.StatusInternalServerError,
 			apierrors.CodeInternalServerError,
 		)
+	}
+
+	action := models.Activity{
+		Message: activity.UserLoggedIn,
+		Object:  user.ToActivity(),
+		Filter: activity.NewLogFilter(models.ActivityFields{
+			Action:       activity.UserLoggedIn,
+			UserID:       user.ID.String(),
+			ObjectType:   rbac.ResourceUser.String(),
+			ProviderType: string(user.ProviderType),
+			ProviderName: s.Providers[user.ProviderKey].Name,
+		}),
+	}
+	if logErr := s.ActivityLogger.Send(action); logErr != nil {
+		logger.Error("Failed to log login activity", zap.Error(logErr))
 	}
 
 	return handlers.AuthFlowResult{

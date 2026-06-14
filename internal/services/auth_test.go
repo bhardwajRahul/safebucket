@@ -57,7 +57,6 @@ func TestLogin_UserHasMFA_ConfigMFADisabled_RequiresMFA(t *testing.T) {
 	config := models.AuthConfig{
 		TokenSecret:      jwtSecret,
 		MFAEncryptionKey: "01234567890123456789012345678901",
-		MFARequired:      false,
 		WebURL:           "http://localhost:3000",
 	}
 
@@ -145,7 +144,6 @@ func TestLogin_UserNoMFA_ConfigMFADisabled_NoMFARequired(t *testing.T) {
 	config := models.AuthConfig{
 		TokenSecret:      jwtSecret,
 		MFAEncryptionKey: "01234567890123456789012345678901",
-		MFARequired:      false,
 		WebURL:           "http://localhost:3000",
 	}
 
@@ -220,16 +218,15 @@ func TestLogin_UserNoMFA_ConfigMFADisabled_NoMFARequired(t *testing.T) {
 	})
 }
 
-func TestLogin_UserNoMFA_ConfigMFAEnabled_RequiresMFA(t *testing.T) {
+func TestLogin_UserNoMFA_ProviderMFAEnabled_RequiresMFA(t *testing.T) {
 	jwtSecret := "test-secret-key-for-jwt-signing"
 	config := models.AuthConfig{
 		TokenSecret:      jwtSecret,
 		MFAEncryptionKey: "01234567890123456789012345678901",
-		MFARequired:      true,
 		WebURL:           "http://localhost:3000",
 	}
 
-	t.Run("should require MFA when config MFA is enabled even if user has no devices", func(t *testing.T) {
+	t.Run("should require MFA when the local provider enforces it even if user has no devices", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
 		defer func(db *sql.DB) { _ = db.Close() }(db)
@@ -243,9 +240,10 @@ func TestLogin_UserNoMFA_ConfigMFAEnabled_RequiresMFA(t *testing.T) {
 			AuthConfig: config,
 			Providers: configuration.Providers{
 				"local": {
-					Name:    "Local",
-					Type:    models.LocalProviderType,
-					Domains: []string{},
+					Name:        "Local",
+					Type:        models.LocalProviderType,
+					Domains:     []string{},
+					MFARequired: true,
 				},
 			},
 			ActivityLogger: &MockActivityLogger{},
@@ -283,7 +281,7 @@ func TestLogin_UserNoMFA_ConfigMFAEnabled_RequiresMFA(t *testing.T) {
 
 		body := loginResponseBody(t, response)
 		assert.True(t, body.MFARequired,
-			"MFARequired should be true when config MFA is enabled")
+			"MFARequired should be true when the local provider enforces MFA")
 
 		mfaToken := cookieValue(response, "safebucket_mfa_token")
 		assert.NotEmpty(t, mfaToken, "Should set the MFA cookie")
