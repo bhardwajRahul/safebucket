@@ -1,7 +1,7 @@
-import { formatDistanceToNow } from "date-fns";
 import { Database, File, Folder, Link2, Smartphone, User } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { formatAction } from "../helpers/format";
+import { TimestampCell } from "./TimestampCell";
 import type { TFunction } from "i18next";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { ElementType } from "react";
@@ -103,12 +103,7 @@ export const createColumns = (t: TFunction): Array<ColumnDef<IActivity>> => [
   {
     accessorKey: "timestamp",
     header: t("admin.activity.columns.timestamp"),
-    cell: ({ row }) => {
-      const timestamp = row.original.timestamp;
-      if (!timestamp) return "-";
-      const date = new Date(Number(timestamp) / 1000000);
-      return formatDistanceToNow(date, { addSuffix: true });
-    },
+    cell: ({ row }) => <TimestampCell timestamp={row.original.timestamp} />,
   },
   {
     accessorKey: "user",
