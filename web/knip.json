@@ -1,15 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": ["src/main.tsx"],
+  "entry": ["src/**/*.test.{ts,tsx}"],
   "project": ["src/**/*.{ts,tsx}"],
-  "ignore": ["src/routeTree.gen.ts"],
   "ignoreDependencies": [
     "tw-animate-css",
     "tailwindcss",
     "@trivago/prettier-plugin-sort-imports",
     "prettier-plugin-tailwindcss",
-    "@testing-library/dom",
-    "@testing-library/react",
     "@tanstack/eslint-config",
     "eslint-plugin-i18next",
     "eslint-plugin-jsx-a11y"
