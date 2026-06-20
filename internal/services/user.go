@@ -12,7 +12,6 @@ import (
 	m "github.com/safebucket/safebucket/internal/middlewares"
 	"github.com/safebucket/safebucket/internal/models"
 	"github.com/safebucket/safebucket/internal/notifier"
-	"github.com/safebucket/safebucket/internal/rbac"
 	"github.com/safebucket/safebucket/internal/sql"
 
 	"github.com/alexedwards/argon2id"
@@ -86,23 +85,7 @@ func (s UserService) CreateUser(
 		}
 		newUser.HashedPassword = hash
 
-		err = s.DB.Transaction(func(tx *gorm.DB) error {
-			if createErr := sql.CreateUserWithInvites(logger, tx, &newUser); createErr != nil {
-				return createErr
-			}
-
-			action := models.Activity{
-				Message: activity.UserCreated,
-				Object:  newUser.ToActivity(),
-				Filter: activity.NewLogFilter(models.ActivityFields{
-					Action:     rbac.ActionCreate.String(),
-					ObjectType: rbac.ResourceUser.String(),
-					UserID:     newUser.ID.String(),
-				}),
-			}
-
-			return s.ActivityLogger.Send(action)
-		})
+		err = sql.CreateUserWithInvites(logger, s.DB, &newUser)
 		if err != nil {
 			return models.User{}, apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
 		}
