@@ -44,7 +44,7 @@ func validateFilename(fl validator.FieldLevel) bool {
 func validateFoldername(fl validator.FieldLevel) bool {
 	foldername := fl.Field().String()
 
-	regex := regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_ \-]*$`)
+	regex := regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_ \-.()\[\]]*$`)
 
 	// Block prohibited characters: / \ < > : " | ? * and null byte
 	prohibited := regexp.MustCompile(`[/\\<>:"|?*\x00]`)
