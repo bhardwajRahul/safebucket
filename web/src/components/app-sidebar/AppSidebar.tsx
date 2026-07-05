@@ -27,8 +27,6 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuAction,
@@ -182,50 +180,7 @@ export const AppSidebar: FC = () => {
               </SidebarMenuSub>
             </SidebarMenuItem>
           </SidebarGroup>
-          <SidebarGroup>
-            {nav.settings.map((item) => (
-              <SidebarMenuItem key={item.title}>
-                <SidebarMenuButton asChild tooltip={t(item.title)}>
-                  <div>
-                    <item.icon />
-                    {t(item.title)}
-                  </div>
-                </SidebarMenuButton>
-                <SidebarMenuSub>
-                  {item.items.map((subItem) => (
-                    <SidebarMenuSubItem key={subItem.title}>
-                      <SidebarMenuSubButton
-                        asChild
-                        isActive={location.pathname === subItem.url}
-                      >
-                        <Link to={subItem.url}>{t(subItem.title)}</Link>
-                      </SidebarMenuSubButton>
-                    </SidebarMenuSubItem>
-                  ))}
-                </SidebarMenuSub>
-              </SidebarMenuItem>
-            ))}
-          </SidebarGroup>
         </SidebarMenu>
-        <SidebarGroup className="mt-auto">
-          <SidebarGroupLabel>Help</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {nav.help.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild size="sm">
-                    <Link to={item.url}>
-                      <item.icon />
-                      {item.title === "Settings"
-                        ? t("navigation.settings")
-                        : item.title}
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
@@ -273,6 +228,15 @@ export const AppSidebar: FC = () => {
                     </div>
                   </div>
                 </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {nav.help.map((item) => (
+                  <DropdownMenuItem key={item.title} asChild>
+                    <Link to={item.url}>
+                      <item.icon className="mr-2" />
+                      {t(item.title)}
+                    </Link>
+                  </DropdownMenuItem>
+                ))}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={logout}>
                   <LogOut className="mr-2" />
