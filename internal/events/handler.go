@@ -136,7 +136,8 @@ func handleUploadEvents(
 		}
 
 		if file.Status != models.FileStatusUploading {
-			zap.L().Warn("file is already uploaded", zap.Error(err))
+			zap.L().Warn("file is already uploaded",
+				zap.String("file_id", event.FileID), zap.String("bucket_id", event.BucketID))
 			continue
 		}
 

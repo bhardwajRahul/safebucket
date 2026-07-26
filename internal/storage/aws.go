@@ -47,46 +47,18 @@ func NewAWSStorage(bucketName string) IStorage {
 	return AWSStorage{BucketName: bucketName, storage: client, presigner: presigner}
 }
 
-func (a AWSStorage) UploadMethod() string {
-	return c.UploadMethodPost
-}
-
 func (a AWSStorage) GetBucketName() string {
 	return a.BucketName
 }
 
-func (a AWSStorage) PresignedGetObject(objectPath string, opts GetObjectOptions) (string, error) {
-	req := &s3.GetObjectInput{
-		Bucket: aws.String(a.BucketName),
-		Key:    aws.String(objectPath),
-	}
-	if opts.InlineContentType != "" {
-		req.ResponseContentDisposition = aws.String("inline")
-		req.ResponseContentType = aws.String(opts.InlineContentType)
-	} else if opts.DownloadFilename != "" {
-		req.ResponseContentDisposition = aws.String(attachmentDisposition(opts.DownloadFilename))
-	}
-
-	resp, err := a.presigner.PresignGetObject(
-		context.Background(),
-		req,
-		s3.WithPresignExpires(c.UploadPolicyExpirationInMinutes*time.Minute),
-	)
-	if err != nil {
-		return "", err
-	}
-
-	return resp.URL, nil
-}
-
-func (a AWSStorage) PresignedPostPolicy(
-	path string,
+func (a AWSStorage) PresignUpload(
+	objectPath string,
 	size int,
 	metadata map[string]string,
-) (string, map[string]string, error) {
+) (PresignedUpload, error) {
 	req := &s3.PutObjectInput{
 		Bucket:        aws.String(a.BucketName),
-		Key:           aws.String(path),
+		Key:           aws.String(objectPath),
 		ContentLength: aws.Int64(int64(size)),
 		Expires: aws.Time(
 			time.Now().UTC().Add(c.UploadPolicyExpirationInMinutes * time.Minute),
@@ -112,15 +84,58 @@ func (a AWSStorage) PresignedPostPolicy(
 		},
 	)
 	if err != nil {
-		return "", nil, err
+		return PresignedUpload{}, err
 	}
 
 	for _, field := range metaFields {
-		key := "x-amz-meta-" + field
-		presignedPost.Values[key] = metadata[field]
+		presignedPost.Values["x-amz-meta-"+field] = metadata[field]
 	}
 
-	return presignedPost.URL, presignedPost.Values, nil
+	return PresignedUpload{Response: models.FileUploadResponse{
+		Method: c.UploadMethodPost,
+		URL:    presignedPost.URL,
+		Body:   []map[string]string{presignedPost.Values},
+	}}, nil
+}
+
+func (a AWSStorage) SupportsMultipart() bool {
+	return false
+}
+
+func (a AWSStorage) ListObjectParts(_, _ string) ([]PartInfo, error) {
+	return nil, ErrMultipartNotSupported
+}
+
+func (a AWSStorage) CompleteMultipartUpload(_, _ string, _ []PartInfo) error {
+	return ErrMultipartNotSupported
+}
+
+func (a AWSStorage) AbortMultipartUpload(_, _ string) error {
+	return ErrMultipartNotSupported
+}
+
+func (a AWSStorage) PresignedGetObject(objectPath string, opts GetObjectOptions) (string, error) {
+	req := &s3.GetObjectInput{
+		Bucket: aws.String(a.BucketName),
+		Key:    aws.String(objectPath),
+	}
+	if opts.InlineContentType != "" {
+		req.ResponseContentDisposition = aws.String("inline")
+		req.ResponseContentType = aws.String(opts.InlineContentType)
+	} else if opts.DownloadFilename != "" {
+		req.ResponseContentDisposition = aws.String(attachmentDisposition(opts.DownloadFilename))
+	}
+
+	resp, err := a.presigner.PresignGetObject(
+		context.Background(),
+		req,
+		s3.WithPresignExpires(c.UploadPolicyExpirationInMinutes*time.Minute),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	return resp.URL, nil
 }
 
 func (a AWSStorage) StatObject(path string) (map[string]string, error) {

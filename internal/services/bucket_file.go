@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/safebucket/safebucket/internal/activity"
+	"github.com/safebucket/safebucket/internal/cache"
 	apierrors "github.com/safebucket/safebucket/internal/errors"
 	"github.com/safebucket/safebucket/internal/events"
 	"github.com/safebucket/safebucket/internal/handlers"
@@ -27,6 +28,7 @@ import (
 
 type BucketFileService struct {
 	DB                 *gorm.DB
+	Cache              cache.ICache
 	Storage            storage.IStorage
 	Publisher          messaging.IPublisher
 	ActivityLogger     activity.IActivityLogger
@@ -105,11 +107,10 @@ func (s BucketFileService) UploadFile(
 			return res.Error
 		}
 
-		var presignErr error
-		response, presignErr = storage.PresignUpload(
-			logger,
-			s.Storage,
-			path.Join("buckets", bucket.ID.String(), file.ID.String()),
+		objectPath := path.Join("buckets", bucket.ID.String(), file.ID.String())
+
+		presigned, presignErr := s.Storage.PresignUpload(
+			objectPath,
 			body.Size,
 			map[string]string{
 				"bucket_id": bucket.ID.String(),
@@ -117,8 +118,23 @@ func (s BucketFileService) UploadFile(
 				"user_id":   user.UserID.String(),
 			},
 		)
+		if presignErr != nil {
+			logger.Error("Presign upload failed", zap.Error(presignErr))
+			return presignErr
+		}
+		response = presigned.Response
 
-		return presignErr
+		if presigned.UploadID != "" {
+			state := cache.MultipartState{UploadID: presigned.UploadID, PartSize: presigned.PartSize}
+			if cacheErr := cache.SetMultipartState(s.Cache, file.ID.String(), state); cacheErr != nil {
+				if abortErr := s.Storage.AbortMultipartUpload(objectPath, presigned.UploadID); abortErr != nil {
+					logger.Warn("Failed to abort orphaned multipart upload", zap.Error(abortErr))
+				}
+				return cacheErr
+			}
+		}
+
+		return nil
 	})
 	if err != nil {
 		return models.FileUploadResponse{}, apierrors.New(http.StatusInternalServerError, apierrors.CodeCreateFailed)
@@ -190,6 +206,26 @@ func (s BucketFileService) HandleUploadedStatus(
 		}
 
 		objectPath := path.Join("buckets", file.BucketID.String(), file.ID.String())
+
+		multipart, isMultipart, cacheErr := cache.GetMultipartState(s.Cache, file.ID.String())
+		if cacheErr != nil {
+			logger.Error("Failed to read multipart state", zap.Error(cacheErr))
+			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+		}
+
+		if isMultipart {
+			if completeErr := storage.FinalizeMultipartUpload(
+				s.Storage, objectPath, multipart.UploadID, multipart.PartSize, int64(file.Size),
+			); completeErr != nil {
+				if errors.Is(completeErr, storage.ErrMultipartPartMismatch) {
+					return apierrors.New(http.StatusBadRequest, apierrors.CodeMultipartSizeMismatch)
+				}
+				logger.Error("Failed to complete multipart upload",
+					zap.Error(completeErr), zap.String("path", objectPath))
+				return apierrors.New(http.StatusInternalServerError, apierrors.CodeMultipartCompleteFailed)
+			}
+		}
+
 		if _, err := s.Storage.StatObject(objectPath); err != nil {
 			logger.Error("File not found in storage",
 				zap.Error(err),
@@ -201,6 +237,12 @@ func (s BucketFileService) HandleUploadedStatus(
 		if err := tx.Model(&file).Update("status", models.FileStatusUploaded).Error; err != nil {
 			logger.Error("Failed to update file status", zap.Error(err))
 			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+		}
+
+		if isMultipart {
+			if delErr := cache.DeleteMultipartState(s.Cache, file.ID.String()); delErr != nil {
+				logger.Warn("Failed to delete multipart state from cache", zap.Error(delErr))
+			}
 		}
 
 		if err := s.ActivityLogger.Send(models.Activity{
@@ -529,11 +571,22 @@ func (s BucketFileService) PurgeFile(
 			return apierrors.New(http.StatusInternalServerError, apierrors.CodeFetchFailed)
 		}
 
-		if !file.DeletedAt.Valid {
+		if !file.DeletedAt.Valid && file.Status != models.FileStatusUploading {
 			return apierrors.New(http.StatusConflict, apierrors.CodeFileNotInTrash)
 		}
 
 		objectPath := path.Join("buckets", file.BucketID.String(), file.ID.String())
+
+		if multipart, isMultipart, _ := cache.GetMultipartState(s.Cache, file.ID.String()); isMultipart {
+			if err := s.Storage.AbortMultipartUpload(objectPath, multipart.UploadID); err != nil {
+				logger.Warn("Failed to abort multipart upload",
+					zap.Error(err),
+					zap.String("path", objectPath))
+			}
+			if delErr := cache.DeleteMultipartState(s.Cache, file.ID.String()); delErr != nil {
+				logger.Warn("Failed to delete multipart state from cache", zap.Error(delErr))
+			}
+		}
 
 		if err := s.Storage.UnmarkAsTrashed(objectPath, file); err != nil {
 			logger.Warn("Failed to delete trash marker",

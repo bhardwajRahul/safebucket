@@ -1,11 +1,13 @@
 package services
 
 import (
+	"errors"
 	"net/http"
 	"path"
 	"time"
 
 	"github.com/safebucket/safebucket/internal/activity"
+	"github.com/safebucket/safebucket/internal/cache"
 	apierrors "github.com/safebucket/safebucket/internal/errors"
 	"github.com/safebucket/safebucket/internal/events"
 	"github.com/safebucket/safebucket/internal/handlers"
@@ -26,6 +28,7 @@ import (
 
 type PublicShareService struct {
 	DB                    *gorm.DB
+	Cache                 cache.ICache
 	Storage               storage.IStorage
 	ActivityLogger        activity.IActivityLogger
 	Publisher             messaging.IPublisher
@@ -336,11 +339,10 @@ func (s PublicShareService) UploadShareFile(
 			return txErr
 		}
 
-		var presignErr error
-		response, presignErr = storage.PresignUpload(
-			logger,
-			s.Storage,
-			path.Join("buckets", share.BucketID.String(), file.ID.String()),
+		objectPath := path.Join("buckets", share.BucketID.String(), file.ID.String())
+
+		presigned, presignErr := s.Storage.PresignUpload(
+			objectPath,
 			int(body.Size),
 			map[string]string{
 				"bucket_id": share.BucketID.String(),
@@ -349,8 +351,10 @@ func (s PublicShareService) UploadShareFile(
 			},
 		)
 		if presignErr != nil {
+			logger.Error("Presign upload failed", zap.Error(presignErr))
 			return presignErr
 		}
+		response = presigned.Response
 
 		uploadResult := tx.Model(&models.Share{}).
 			Where("id = ? AND (max_uploads IS NULL OR current_uploads < max_uploads)", share.ID).
@@ -374,6 +378,16 @@ func (s PublicShareService) UploadShareFile(
 			}),
 		}); activityErr != nil {
 			logger.Warn("Failed to log share upload activity", zap.Error(activityErr))
+		}
+
+		if presigned.UploadID != "" {
+			state := cache.MultipartState{UploadID: presigned.UploadID, PartSize: presigned.PartSize}
+			if cacheErr := cache.SetMultipartState(s.Cache, file.ID.String(), state); cacheErr != nil {
+				if abortErr := s.Storage.AbortMultipartUpload(objectPath, presigned.UploadID); abortErr != nil {
+					logger.Warn("Failed to abort orphaned multipart upload", zap.Error(abortErr))
+				}
+				return cacheErr
+			}
 		}
 
 		return nil
@@ -419,6 +433,26 @@ func (s PublicShareService) ConfirmShareUpload(
 		}
 
 		objectPath := path.Join("buckets", file.BucketID.String(), file.ID.String())
+
+		multipart, isMultipart, cacheErr := cache.GetMultipartState(s.Cache, file.ID.String())
+		if cacheErr != nil {
+			logger.Error("Failed to read multipart state", zap.Error(cacheErr))
+			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+		}
+
+		if isMultipart {
+			if completeErr := storage.FinalizeMultipartUpload(
+				s.Storage, objectPath, multipart.UploadID, multipart.PartSize, int64(file.Size),
+			); completeErr != nil {
+				if errors.Is(completeErr, storage.ErrMultipartPartMismatch) {
+					return apierrors.New(http.StatusBadRequest, apierrors.CodeMultipartSizeMismatch)
+				}
+				logger.Error("Failed to complete multipart upload",
+					zap.Error(completeErr), zap.String("path", objectPath))
+				return apierrors.New(http.StatusInternalServerError, apierrors.CodeMultipartCompleteFailed)
+			}
+		}
+
 		if _, statErr := s.Storage.StatObject(objectPath); statErr != nil {
 			logger.Error("File not found in storage",
 				zap.Error(statErr),
@@ -430,6 +464,12 @@ func (s PublicShareService) ConfirmShareUpload(
 		if txErr := tx.Model(&file).Update("status", models.FileStatusUploaded).Error; txErr != nil {
 			logger.Error("Failed to update file status", zap.Error(txErr))
 			return apierrors.New(http.StatusInternalServerError, apierrors.CodeInternalServerError)
+		}
+
+		if isMultipart {
+			if delErr := cache.DeleteMultipartState(s.Cache, file.ID.String()); delErr != nil {
+				logger.Warn("Failed to delete multipart state from cache", zap.Error(delErr))
+			}
 		}
 
 		if activityErr := s.ActivityLogger.Send(models.Activity{

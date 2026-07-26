@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +20,7 @@ import (
 	"go.uber.org/zap"
 )
 
-type S3Storage struct {
+type RustFSStorage struct {
 	BucketName    string
 	storage       *minio.Client
 	signingClient *minio.Client
@@ -76,7 +78,7 @@ func newS3Storage(cfg s3Config) IStorage {
 			zap.Error(err))
 	}
 
-	return S3Storage{
+	return RustFSStorage{
 		BucketName:    bucketName,
 		storage:       minioClient,
 		signingClient: signingClient,
@@ -107,15 +109,11 @@ func NewRustFSStorage(config *models.RustFSStorageConfiguration) IStorage {
 	})
 }
 
-func (s S3Storage) GetBucketName() string {
+func (s RustFSStorage) GetBucketName() string {
 	return s.BucketName
 }
 
-func (s S3Storage) UploadMethod() string {
-	return c.UploadMethodPost
-}
-
-func (s S3Storage) PresignedGetObject(objectPath string, opts GetObjectOptions) (string, error) {
+func (s RustFSStorage) PresignedGetObject(objectPath string, opts GetObjectOptions) (string, error) {
 	var reqParams url.Values
 	if opts.InlineContentType != "" {
 		reqParams = url.Values{
@@ -142,30 +140,147 @@ func (s S3Storage) PresignedGetObject(objectPath string, opts GetObjectOptions) 
 	return presignedURL.String(), nil
 }
 
-func (s S3Storage) PresignedPostPolicy(
-	path string,
+func (s RustFSStorage) PresignUpload(
+	objectPath string,
 	size int,
 	metadata map[string]string,
-) (string, map[string]string, error) {
-	policy := minio.NewPostPolicy()
-	_ = policy.SetBucket(s.BucketName)
-	_ = policy.SetKey(path)
-	_ = policy.SetContentLengthRange(int64(size), int64(size))
-	_ = policy.SetExpires(time.Now().UTC().Add(c.UploadPolicyExpirationInMinutes * time.Minute))
-	_ = policy.SetUserMetadata("Bucket-Id", metadata["bucket_id"])
-	_ = policy.SetUserMetadata("File-Id", metadata["file_id"])
-	_ = policy.SetUserMetadata("User-Id", metadata["user_id"])
-	_ = policy.SetUserMetadata("Share-Id", metadata["share_id"])
-
-	presignedURL, formData, err := s.signingClient.PresignedPostPolicy(context.Background(), policy)
-	if err != nil {
-		return "", map[string]string{}, err
+) (PresignedUpload, error) {
+	ctx := context.Background()
+	userMetadata := map[string]string{
+		"Bucket-Id": metadata["bucket_id"],
+		"File-Id":   metadata["file_id"],
+		"User-Id":   metadata["user_id"],
+		"Share-Id":  metadata["share_id"],
 	}
 
-	return presignedURL.String(), formData, nil
+	if int64(size) <= c.MultipartPartSize {
+		metaHeaders := http.Header{}
+		for key, value := range userMetadata {
+			metaHeaders.Set("X-Amz-Meta-"+key, value)
+		}
+
+		signHeaders := metaHeaders.Clone()
+		signHeaders.Set("Content-Length", strconv.FormatInt(int64(size), 10))
+
+		presignedURL, err := s.signingClient.PresignHeader(
+			ctx, http.MethodPut, s.BucketName, objectPath,
+			c.UploadPolicyExpirationInMinutes*time.Minute, nil, signHeaders,
+		)
+		if err != nil {
+			return PresignedUpload{}, err
+		}
+
+		clientHeaders := make(map[string]string, len(metaHeaders))
+		for key := range metaHeaders {
+			clientHeaders[key] = metaHeaders.Get(key)
+		}
+
+		return PresignedUpload{Response: models.FileUploadResponse{
+			Method: c.UploadMethodPut,
+			Parts: []models.FilePartURL{
+				{PartNumber: 1, URL: presignedURL.String(), Size: int64(size), Headers: clientHeaders},
+			},
+		}}, nil
+	}
+
+	core := minio.Core{Client: s.storage}
+	uploadID, err := core.NewMultipartUpload(
+		ctx, s.BucketName, objectPath, minio.PutObjectOptions{UserMetadata: userMetadata},
+	)
+	if err != nil {
+		return PresignedUpload{}, err
+	}
+
+	partSize, partCount := ComputeMultipartLayout(int64(size))
+	parts := make([]models.FilePartURL, 0, partCount)
+	for partNumber := 1; partNumber <= partCount; partNumber++ {
+		expected := ExpectedPartSize(int64(size), partSize, partNumber, partCount)
+
+		reqParams := url.Values{
+			"uploadId":   []string{uploadID},
+			"partNumber": []string{strconv.Itoa(partNumber)},
+		}
+		extraHeaders := http.Header{}
+		extraHeaders.Set("Content-Length", strconv.FormatInt(expected, 10))
+
+		presignedURL, partErr := s.signingClient.PresignHeader(
+			ctx, http.MethodPut, s.BucketName, objectPath,
+			c.UploadPolicyExpirationInMinutes*time.Minute, reqParams, extraHeaders,
+		)
+		if partErr != nil {
+			if abortErr := s.AbortMultipartUpload(objectPath, uploadID); abortErr != nil {
+				zap.L().Warn("Failed to abort multipart upload after part URL error", zap.Error(abortErr))
+			}
+			return PresignedUpload{}, partErr
+		}
+		parts = append(parts, models.FilePartURL{PartNumber: partNumber, URL: presignedURL.String(), Size: expected})
+	}
+
+	return PresignedUpload{
+		Response: models.FileUploadResponse{Method: c.UploadMethodPut, Parts: parts},
+		UploadID: uploadID,
+		PartSize: partSize,
+	}, nil
 }
 
-func (s S3Storage) StatObject(path string) (map[string]string, error) {
+func (s RustFSStorage) SupportsMultipart() bool {
+	return true
+}
+
+func (s RustFSStorage) ListObjectParts(path, uploadID string) ([]PartInfo, error) {
+	core := minio.Core{Client: s.storage}
+
+	var parts []PartInfo
+	partNumberMarker := 0
+	for {
+		result, err := core.ListObjectParts(context.Background(), s.BucketName, path, uploadID, partNumberMarker, 1000)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, part := range result.ObjectParts {
+			parts = append(parts, PartInfo{
+				PartNumber:   part.PartNumber,
+				Size:         part.Size,
+				ETag:         part.ETag,
+				LastModified: part.LastModified,
+			})
+		}
+
+		if !result.IsTruncated {
+			break
+		}
+		partNumberMarker = result.NextPartNumberMarker
+	}
+
+	return parts, nil
+}
+
+func (s RustFSStorage) CompleteMultipartUpload(path, uploadID string, parts []PartInfo) error {
+	core := minio.Core{Client: s.storage}
+
+	completeParts := make([]minio.CompletePart, len(parts))
+	for i, part := range parts {
+		completeParts[i] = minio.CompletePart{PartNumber: part.PartNumber, ETag: part.ETag}
+	}
+
+	_, err := core.CompleteMultipartUpload(
+		context.Background(), s.BucketName, path, uploadID, completeParts, minio.PutObjectOptions{},
+	)
+	return err
+}
+
+func (s RustFSStorage) AbortMultipartUpload(path, uploadID string) error {
+	core := minio.Core{Client: s.storage}
+
+	err := core.AbortMultipartUpload(context.Background(), s.BucketName, path, uploadID)
+	if err != nil && minio.ToErrorResponse(err).Code == "NoSuchUpload" {
+		return nil
+	}
+	return err
+}
+
+func (s RustFSStorage) StatObject(path string) (map[string]string, error) {
 	file, err := s.storage.StatObject(
 		context.Background(),
 		s.BucketName,
@@ -179,7 +294,7 @@ func (s S3Storage) StatObject(path string) (map[string]string, error) {
 	return file.UserMetadata, err
 }
 
-func (s S3Storage) ListObjects(prefix string, maxKeys int32) ([]string, error) {
+func (s RustFSStorage) ListObjects(prefix string, maxKeys int32) ([]string, error) {
 	opts := minio.ListObjectsOptions{
 		Prefix:    prefix,
 		Recursive: true,
@@ -198,7 +313,7 @@ func (s S3Storage) ListObjects(prefix string, maxKeys int32) ([]string, error) {
 	return objects, nil
 }
 
-func (s S3Storage) RemoveObject(path string) error {
+func (s RustFSStorage) RemoveObject(path string) error {
 	return s.storage.RemoveObject(
 		context.Background(),
 		s.BucketName,
@@ -207,7 +322,7 @@ func (s S3Storage) RemoveObject(path string) error {
 	)
 }
 
-func (s S3Storage) RemoveObjects(paths []string) error {
+func (s RustFSStorage) RemoveObjects(paths []string) error {
 	objectsCh := make(chan minio.ObjectInfo)
 
 	go func() {
@@ -238,7 +353,7 @@ func (s S3Storage) RemoveObjects(paths []string) error {
 // Patterns:
 //   - trash/{bucket-id}/files/{file-id} -> buckets/{bucket-id}/{file-id}
 //   - trash/{bucket-id}/folders/{folder-id} -> buckets/{bucket-id}/{folder-id}
-func (s S3Storage) IsTrashMarkerPath(path string) (bool, string) {
+func (s RustFSStorage) IsTrashMarkerPath(path string) (bool, string) {
 	if !strings.HasPrefix(path, trashPrefix) {
 		return false, ""
 	}
@@ -263,7 +378,7 @@ func (s S3Storage) IsTrashMarkerPath(path string) (bool, string) {
 }
 
 // getTrashMarkerPath converts buckets/{bucket-id}/{id} to trash/{bucket-id}/files|folders/{id}.
-func (s S3Storage) getTrashMarkerPath(objectPath string, model interface{}) string {
+func (s RustFSStorage) getTrashMarkerPath(objectPath string, model interface{}) string {
 	remainder := strings.TrimPrefix(objectPath, bucketsPrefix)
 
 	var resourceType string
@@ -287,7 +402,7 @@ func (s S3Storage) getTrashMarkerPath(objectPath string, model interface{}) stri
 	return path.Join(trashPrefix, bucketID, resourceType, resourceID)
 }
 
-func (s S3Storage) MarkAsTrashed(objectPath string, object interface{}) error {
+func (s RustFSStorage) MarkAsTrashed(objectPath string, object interface{}) error {
 	ctx := context.Background()
 	markerPath := s.getTrashMarkerPath(objectPath, object)
 
@@ -306,7 +421,7 @@ func (s S3Storage) MarkAsTrashed(objectPath string, object interface{}) error {
 	return nil
 }
 
-func (s S3Storage) UnmarkAsTrashed(objectPath string, object interface{}) error {
+func (s RustFSStorage) UnmarkAsTrashed(objectPath string, object interface{}) error {
 	ctx := context.Background()
 	markerPath := s.getTrashMarkerPath(objectPath, object)
 	err := s.storage.RemoveObject(ctx, s.BucketName, markerPath, minio.RemoveObjectOptions{})
@@ -317,7 +432,7 @@ func (s S3Storage) UnmarkAsTrashed(objectPath string, object interface{}) error 
 }
 
 // processExistingLifecycleRules processes existing lifecycle rules and returns the updated configuration.
-func (s S3Storage) processExistingLifecycleRules(
+func (s RustFSStorage) processExistingLifecycleRules(
 	existingConfig *lifecycle.Configuration,
 	err error,
 	trashRuleID, multipartRuleID string,
@@ -373,7 +488,7 @@ func (s S3Storage) processExistingLifecycleRules(
 // References:
 // - https://github.com/minio/minio/issues/16120
 // - https://github.com/minio/minio/issues/19115
-func (s S3Storage) EnsureTrashLifecyclePolicy(retentionDays int) error {
+func (s RustFSStorage) EnsureTrashLifecyclePolicy(retentionDays int) error {
 	const trashRuleID = "safebucket-trash-retention"
 	const multipartRuleID = "safebucket-abort-incomplete-multipart"
 

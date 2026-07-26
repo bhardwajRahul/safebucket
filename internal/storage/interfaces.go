@@ -1,6 +1,11 @@
 package storage
 
-import "mime"
+import (
+	"mime"
+	"time"
+
+	"github.com/safebucket/safebucket/internal/models"
+)
 
 const (
 	bucketsPrefix = "buckets/"
@@ -17,6 +22,19 @@ type GetObjectOptions struct {
 	DownloadFilename  string
 }
 
+type PartInfo struct {
+	PartNumber   int
+	Size         int64
+	ETag         string
+	LastModified time.Time
+}
+
+type PresignedUpload struct {
+	Response models.FileUploadResponse
+	UploadID string
+	PartSize int64
+}
+
 func attachmentDisposition(filename string) string {
 	if filename == "" {
 		return "attachment"
@@ -28,13 +46,12 @@ func attachmentDisposition(filename string) string {
 }
 
 type IStorage interface {
-	UploadMethod() string
 	PresignedGetObject(objectPath string, opts GetObjectOptions) (string, error)
-	PresignedPostPolicy(
-		path string,
-		size int,
-		metadata map[string]string,
-	) (string, map[string]string, error)
+	PresignUpload(objectPath string, size int, metadata map[string]string) (PresignedUpload, error)
+	SupportsMultipart() bool
+	ListObjectParts(path, uploadID string) ([]PartInfo, error)
+	CompleteMultipartUpload(path, uploadID string, parts []PartInfo) error
+	AbortMultipartUpload(path, uploadID string) error
 	StatObject(path string) (map[string]string, error)
 	ListObjects(prefix string, maxKeys int32) ([]string, error)
 	RemoveObject(path string) error

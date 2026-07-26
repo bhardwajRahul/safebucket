@@ -38,7 +38,10 @@ const (
 	CacheMFAAttemptsKey         = "mfa:attempts:%s"
 	CacheTOTPUsedKey            = "totp:used:%s:%s"
 	CacheUserSessionsKey        = "user:sessions:%s"
+	CacheMultipartStateKey      = "multipart:state:%s"
 )
+
+const CacheMultipartStateExpiry = 2 * time.Hour
 
 const (
 	EventsNotifications  = "notifications"
@@ -49,9 +52,13 @@ const (
 const UploadPolicyExpirationInMinutes = 15
 
 const (
-	UploadMethodPost      = "post"
-	UploadMethodPut       = "put"
-	UploadMethodMultipart = "multipart"
+	UploadMethodPost = "post"
+	UploadMethodPut  = "put"
+)
+
+const (
+	MultipartPartSize int64 = 64 * 1024 * 1024
+	MultipartMaxParts       = 10000
 )
 
 const (
