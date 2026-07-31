@@ -29,16 +29,27 @@ const (
 )
 
 const (
-	CacheMaxAppIdentityLifetime = 60
-	CacheAppIdentityKey         = "app:identity"
-	CacheAppRateLimitKey        = "app:ratelimit:%s"
-	CacheAppWorkerLockKey       = "app:worker:lock:%s"
-	CacheAppWorkerLockTTL       = 60
-	CacheAppWorkerLockRefresh   = 55
-	CacheMFAAttemptsKey         = "mfa:attempts:%s"
-	CacheTOTPUsedKey            = "totp:used:%s:%s"
-	CacheUserSessionsKey        = "user:sessions:%s"
-	CacheMultipartStateKey      = "multipart:state:%s"
+	CacheMaxAppIdentityLifetime  = 60
+	CacheAppIdentityKey          = "app:identity"
+	CacheAppRateLimitKey         = "app:ratelimit:%s"
+	CacheAppWorkerLockKey        = "app:worker:lock:%s"
+	CacheAppWorkerLockTTL        = 60
+	CacheAppWorkerLockRefresh    = 55
+	CacheAppWorkerActiveKey      = "app:worker:active:%s"
+	CacheAppWorkerActiveLifetime = 60
+	CacheAppWorkerActiveRefresh  = 20
+	CacheMFAAttemptsKey          = "mfa:attempts:%s"
+	CacheTOTPUsedKey             = "totp:used:%s:%s"
+	CacheUserSessionsKey         = "user:sessions:%s"
+	CacheMultipartStateKey       = "multipart:state:%s"
+)
+
+const (
+	WorkerObjectDeletion   = "object_deletion"
+	WorkerBucketEvents     = "bucket_events"
+	WorkerTrashCleanup     = "trash_cleanup"
+	WorkerGarbageCollector = "garbage_collector"
+	CoverageHTTPServer     = "http_server"
 )
 
 const CacheMultipartStateExpiry = 2 * time.Hour
@@ -101,6 +112,10 @@ const (
 	ProviderMemory    = "memory"
 	ProviderAzure     = "azure"
 )
+
+func RequiresUploadConfirmation(storageProvider, eventsProvider string) bool {
+	return storageProvider == ProviderS3 || eventsProvider == ProviderMemory
+}
 
 const (
 	CacheNotifyBatchCountKey = "notify:batch:count:%s"

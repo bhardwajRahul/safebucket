@@ -11,6 +11,7 @@ import type {
   CreateUserPayload,
   IAdminBucket,
 } from "@/types/admin.ts";
+import type { IAdminSettingsResponse } from "@/types/app_settings";
 import { api } from "@/lib/api";
 import { successToast } from "@/components/ui/hooks/use-toast";
 
@@ -59,6 +60,13 @@ export const adminStatsQueryOptions = (days: number = 90) =>
   queryOptions({
     queryKey: ["admin", "stats", days],
     queryFn: () => api.get<AdminStatsResponse>(`/admin/stats?days=${days}`),
+  });
+
+export const adminSettingsQueryOptions = () =>
+  queryOptions({
+    queryKey: ["admin", "settings"],
+    queryFn: () => api.get<IAdminSettingsResponse>("/admin/settings"),
+    staleTime: 5 * 60 * 1000,
   });
 
 export const adminActivityInfiniteQueryOptions = (

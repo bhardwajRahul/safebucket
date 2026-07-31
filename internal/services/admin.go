@@ -2,14 +2,14 @@ package services
 
 import (
 	"github.com/safebucket/safebucket/internal/activity"
+	"github.com/safebucket/safebucket/internal/cache"
+	"github.com/safebucket/safebucket/internal/configuration"
 	"github.com/safebucket/safebucket/internal/handlers"
 	h "github.com/safebucket/safebucket/internal/helpers"
 	m "github.com/safebucket/safebucket/internal/middlewares"
 	"github.com/safebucket/safebucket/internal/models"
-
-	"github.com/safebucket/safebucket/internal/sql"
-
 	"github.com/safebucket/safebucket/internal/rbac"
+	"github.com/safebucket/safebucket/internal/sql"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -19,7 +19,9 @@ import (
 
 type AdminService struct {
 	DB             *gorm.DB
+	Cache          cache.ICache
 	ActivityLogger activity.IActivityLogger
+	Config         models.Configuration
 }
 
 func (s AdminService) Routes() chi.Router {
@@ -35,6 +37,9 @@ func (s AdminService) Routes() chi.Router {
 
 	r.With(m.AuthorizeRole(models.RoleAdmin)).
 		Get("/buckets", handlers.GetListHandler(s.GetBucketList))
+
+	r.With(m.AuthorizeRole(models.RoleAdmin)).
+		Get("/settings", handlers.GetOneHandler(s.GetSettings))
 
 	return r
 }
@@ -105,6 +110,48 @@ func (s AdminService) GetActivity(
 		searchCriteria,
 		query.ActivityQueryParams,
 	)
+}
+
+func (s AdminService) GetSettings(
+	logger *zap.Logger,
+	_ models.UserClaims,
+	_ uuid.UUIDs,
+) (models.AdminSettingsResponse, error) {
+	var platforms *int
+	if count, err := cache.CountActivePlatforms(s.Cache); err != nil {
+		logger.Error("Failed to count active platforms", zap.Error(err))
+	} else {
+		platforms = &count
+	}
+
+	_, deletionQueued := s.Config.Events.Queues[configuration.EventsObjectDeletion]
+	_, bucketQueued := s.Config.Events.Queues[configuration.EventsBucketEvents]
+	confirmsUploads := configuration.RequiresUploadConfirmation(s.Config.Storage.Type, s.Config.Events.Type)
+
+	status := func(name string, applicable bool) models.CoverageStatus {
+		if !applicable {
+			return models.CoverageNotApplicable
+		}
+		covered, err := cache.IsWorkerCovered(s.Cache, name)
+		if err != nil {
+			logger.Error("Failed to check worker coverage", zap.String("worker", name), zap.Error(err))
+			return models.CoverageUnknown
+		}
+		if covered {
+			return models.CoverageCovered
+		}
+		return models.CoverageNotCovered
+	}
+
+	coverage := models.WorkerSettings{
+		HTTPServer:       status(configuration.CoverageHTTPServer, true),
+		ObjectDeletion:   status(configuration.WorkerObjectDeletion, deletionQueued),
+		BucketEvents:     status(configuration.WorkerBucketEvents, bucketQueued),
+		TrashCleanup:     status(configuration.WorkerTrashCleanup, confirmsUploads),
+		GarbageCollector: status(configuration.WorkerGarbageCollector, true),
+	}
+
+	return models.NewAdminSettingsResponse(s.Config, platforms, coverage), nil
 }
 
 func (s AdminService) GetBucketList(
