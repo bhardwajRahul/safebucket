@@ -1,11 +1,13 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Check, Copy, Edit2, Info, X } from "lucide-react";
+import { Check, Copy, Edit2, Info, QrCode, X } from "lucide-react";
 import type { FC } from "react";
 
 import type { IBucket } from "@/types/bucket.ts";
 import { useBucketInformation } from "@/components/bucket-view/hooks/useBucketInformation";
 import { useBucketPermissions } from "@/hooks/usePermissions";
+import { QrCodeDialog } from "@/components/common/components/QrCodeDialog.tsx";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -17,6 +19,7 @@ interface IBucketInformationProps {
 
 export const BucketInformation: FC<IBucketInformationProps> = ({ bucket }) => {
   const { t } = useTranslation();
+  const [qrOpen, setQrOpen] = useState(false);
   const { isOwner } = useBucketPermissions(bucket.id);
   const {
     isEditingName,
@@ -55,6 +58,14 @@ export const BucketInformation: FC<IBucketInformationProps> = ({ bucket }) => {
               ) : (
                 <Copy className="h-3 w-3" />
               )}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setQrOpen(true)}
+              aria-label={t("bucket.settings.information.show_qr")}
+            >
+              <QrCode className="h-3 w-3" />
             </Button>
           </div>
         </div>
@@ -98,6 +109,13 @@ export const BucketInformation: FC<IBucketInformationProps> = ({ bucket }) => {
           </div>
         </div>
       </CardContent>
+      <QrCodeDialog
+        open={qrOpen}
+        onOpenChange={setQrOpen}
+        value={bucketUrl}
+        title={t("bucket.settings.information.qr_title")}
+        description={t("bucket.settings.information.qr_description")}
+      />
     </Card>
   );
 };

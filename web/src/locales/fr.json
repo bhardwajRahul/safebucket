@@ -11,7 +11,9 @@
     "error": "Erreur",
     "delete": "Supprimer",
     "upload": "Uploader",
-    "download": "Télécharger"
+    "download": "Télécharger",
+    "copy": "Copier",
+    "copied": "Copié dans le presse-papiers"
   },
   "errors": {
     "INVALID_PASSWORD": "Mot de passe invalide. Veuillez réessayer.",
@@ -495,7 +497,10 @@
         "title": "Informations du Bucket",
         "bucket_url": "URL du bucket",
         "bucket_name": "Nom du bucket",
-        "enter_bucket_name": "Saisir le nom du bucket"
+        "enter_bucket_name": "Saisir le nom du bucket",
+        "show_qr": "Afficher le QR code",
+        "qr_title": "QR code du bucket",
+        "qr_description": "Scannez pour ouvrir ce bucket."
       },
       "deletion": {
         "title": "Supprimer ce bucket",
@@ -534,6 +539,9 @@
         "uploads_allowed": "Uploads",
         "copy_link": "Copier le lien",
         "link_copied": "Lien de partage copié dans le presse-papiers",
+        "show_qr": "Afficher le QR code",
+        "qr_title": "QR code de partage",
+        "qr_description": "Scannez pour ouvrir le lien de partage.",
         "delete": "Supprimer le lien de partage",
         "deleted": "Lien de partage supprimé",
         "created": "Créé le",

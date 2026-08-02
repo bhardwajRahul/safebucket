@@ -11,7 +11,9 @@
     "error": "Error",
     "delete": "Delete",
     "upload": "Upload",
-    "download": "Download"
+    "download": "Download",
+    "copy": "Copy",
+    "copied": "Copied to clipboard"
   },
   "errors": {
     "INVALID_PASSWORD": "Invalid password. Please try again.",
@@ -490,7 +492,10 @@
         "title": "Bucket Information",
         "bucket_url": "Bucket URL",
         "bucket_name": "Bucket name",
-        "enter_bucket_name": "Enter bucket name"
+        "enter_bucket_name": "Enter bucket name",
+        "show_qr": "Show QR code",
+        "qr_title": "Bucket QR code",
+        "qr_description": "Scan to open this bucket."
       },
       "deletion": {
         "title": "Delete this bucket",
@@ -529,6 +534,9 @@
         "uploads_allowed": "Uploads",
         "copy_link": "Copy link",
         "link_copied": "Share link copied to clipboard",
+        "show_qr": "Show QR code",
+        "qr_title": "Share QR code",
+        "qr_description": "Scan to open the share link.",
         "delete": "Delete share link",
         "deleted": "Share link deleted",
         "created": "Created",
