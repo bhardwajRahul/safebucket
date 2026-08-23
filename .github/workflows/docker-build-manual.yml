@@ -1,0 +1,62 @@
+name: Build and push Docker image (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.set_tag.outputs.tag }}
+    steps:
+      - name: Set tag
+        id: set_tag
+        run: echo "tag=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+  build-amd64:
+    needs: [ prepare ]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build-arch.yml
+    with:
+      arch: amd64
+      runner: ubuntu-latest
+      platform: linux/amd64
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  build-arm64:
+    needs: [ prepare ]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build-arch.yml
+    with:
+      arch: arm64
+      runner: ubuntu-24.04-arm
+      platform: linux/arm64
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  manifests:
+    needs: [prepare, build-amd64, build-arm64]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker-manifests.yml
+    with:
+      tags: ${{ needs.prepare.outputs.tag }}
+      amd64-digest-dockerhub: ${{ needs.build-amd64.outputs.digest-dockerhub }}
+      amd64-digest-ghcr: ${{ needs.build-amd64.outputs.digest-github }}
+      arm64-digest-dockerhub: ${{ needs.build-arm64.outputs.digest-dockerhub }}
+      arm64-digest-ghcr: ${{ needs.build-arm64.outputs.digest-github }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
