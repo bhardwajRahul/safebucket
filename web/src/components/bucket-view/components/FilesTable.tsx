@@ -1,0 +1,97 @@
+import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
+import type { FC } from "react";
+import type { IDataTableColumn } from "@/components/common/components/DataTable/DataTable";
+import type { BucketItem } from "@/types/bucket.ts";
+import { DataTable } from "@/components/common/components/DataTable/DataTable";
+import { FileIconView } from "@/components/bucket-view/components/FileIconView";
+import { FileStatusBadge } from "@/components/bucket-view/components/FileStatusBadge";
+import { RowActionsMenu } from "@/components/bucket-view/components/RowActionsMenu";
+import { isFolder } from "@/components/bucket-view/helpers/utils";
+import { useBucketViewContext } from "@/components/bucket-view/hooks/useBucketViewContext";
+import { formatDate, formatFileSize } from "@/lib/utils";
+import { FileStatus } from "@/types/file.ts";
+
+const isSelectable = (item: BucketItem): boolean =>
+  isFolder(item) || item.status === FileStatus.uploaded;
+
+interface IFilesTableProps {
+  items: Array<BucketItem>;
+}
+
+export const FilesTable: FC<IFilesTableProps> = ({
+  items,
+}: IFilesTableProps) => {
+  const { t } = useTranslation();
+  const { selected, setSelected, openItem, rowSelection, setRowSelection } =
+    useBucketViewContext();
+
+  const columns = useMemo<Array<IDataTableColumn<BucketItem>>>(
+    () => [
+      {
+        id: "name",
+        header: t("bucket.list_view.name"),
+        sortAccessor: (item) => item.name,
+        cell: (item) => (
+          <div className="flex items-center gap-2.5 overflow-hidden">
+            <FileIconView
+              className="text-primary h-5 w-5 shrink-0"
+              isFolder={isFolder(item)}
+              extension={!isFolder(item) ? item.extension : undefined}
+            />
+            <span className="truncate font-medium">{item.name}</span>
+          </div>
+        ),
+      },
+      {
+        id: "size",
+        header: t("bucket.list_view.size"),
+        sortAccessor: (item) => (isFolder(item) ? 0 : item.size),
+        responsive: "md",
+        cellClassName: "text-muted-foreground",
+        cell: (item) => (isFolder(item) ? "-" : formatFileSize(item.size)),
+      },
+      {
+        id: "created_at",
+        header: t("bucket.list_view.uploaded_at"),
+        sortAccessor: (item) => new Date(item.created_at).getTime(),
+        responsive: "lg",
+        cellClassName: "text-muted-foreground",
+        cell: (item) => formatDate(item.created_at),
+      },
+      {
+        id: "status",
+        header: t("bucket.list_view.status"),
+        responsive: "sm",
+        cell: (item) => <FileStatusBadge item={item} />,
+      },
+      {
+        id: "actions",
+        header: "",
+        headerClassName: "w-13",
+        cellClassName: "text-right",
+        cell: (item) => <RowActionsMenu item={item} />,
+      },
+    ],
+    [t],
+  );
+
+  return (
+    <DataTable
+      columns={columns}
+      data={items}
+      getRowId={(item) => item.id}
+      emptyMessage={t("bucket.list_view.empty_folder")}
+      groupOrder={(item) => (isFolder(item) ? 0 : 1)}
+      defaultSortId="name"
+      selection={{
+        rowSelection,
+        onRowSelectionChange: setRowSelection,
+        getIsSelectable: isSelectable,
+      }}
+      onRowClick={setSelected}
+      onRowDoubleClick={openItem}
+      isRowActive={(item) => selected?.id === item.id}
+    />
+  );
+};
