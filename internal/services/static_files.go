@@ -168,6 +168,7 @@ func (s *StaticFileService) secureServeFile(
 
 func (s *StaticFileService) setSecurityHeaders(w http.ResponseWriter, filePath string) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
 
 	if strings.HasSuffix(filePath, ".html") {
 		storage := s.storageExternalURL
