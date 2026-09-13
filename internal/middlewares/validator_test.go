@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/safebucket/safebucket/internal/models"
@@ -14,11 +15,12 @@ import (
 )
 
 type TestValidate struct {
-	Name       string `json:"name"       validate:"required"`
-	Email      string `json:"email"      validate:"required,email"`
-	Filename   string `json:"filename"   validate:"filename"`
-	Foldername string `json:"foldername" validate:"omitempty,foldername"`
-	Type       string `json:"type"       validate:"omitempty,oneof=file folder"`
+	Name          string `json:"name"       validate:"required"`
+	Email         string `json:"email"      validate:"required,email"`
+	Filename      string `json:"filename"   validate:"filename"`
+	Foldername    string `json:"foldername" validate:"omitempty,foldername"`
+	Type          string `json:"type"       validate:"omitempty,oneof=file folder"`
+	ShareCustomID string `json:"custom_id"  validate:"omitempty,min=3,max=255,sharecustomid"`
 }
 
 func mockNextHandler(w http.ResponseWriter, r *http.Request) {
@@ -171,6 +173,62 @@ func TestValidateMiddleware(t *testing.T) {
 				errors := models.Error{Status: tt.expectedStatus, Error: tt.expectedErrors}
 				tests.AssertJSONResponse(t, recorder, http.StatusBadRequest, errors)
 			}
+		})
+	}
+}
+
+func TestValidateShareID(t *testing.T) {
+	testCases := []struct {
+		name    string
+		shareID string
+		valid   bool
+	}{
+		{name: "minimum length", shareID: "a_-", valid: true},
+		{name: "maximum length", shareID: strings.Repeat("a", 255), valid: true},
+		{name: "mixed case", shareID: "Project_files-2026", valid: true},
+		{name: "canonical UUID", shareID: "550e8400-e29b-41d4-a716-446655440000", valid: true},
+		{name: "compact UUID", shareID: "550e8400e29b41d4a716446655440000", valid: true},
+		{name: "empty", shareID: ""},
+		{name: "too short", shareID: "ab"},
+		{name: "too long", shareID: strings.Repeat("a", 256)},
+		{name: "slash", shareID: "project/files"},
+		{name: "space", shareID: "project files"},
+		{name: "unicode", shareID: "projet-été"},
+		{name: "newline", shareID: "project\n"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.valid, validateShareID(tc.shareID))
+		})
+	}
+}
+
+func TestValidateShareCustomID(t *testing.T) {
+	testCases := []struct {
+		name           string
+		path           string
+		expectedStatus int
+	}{
+		{name: "empty", path: "", expectedStatus: http.StatusOK},
+		{name: "UUID", path: "550e8400-e29b-41d4-a716-446655440000", expectedStatus: http.StatusBadRequest},
+		{name: "compact UUID", path: "550e8400e29b41d4a716446655440000", expectedStatus: http.StatusBadRequest},
+		{name: "valid", path: "Project_files-2026", expectedStatus: http.StatusOK},
+		{name: "invalid characters", path: "project/files", expectedStatus: http.StatusBadRequest},
+		{name: "too short", path: "ab", expectedStatus: http.StatusBadRequest},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			body := map[string]string{
+				"name": "John Doe", "email": "john@example.com", "filename": "file.txt", "custom_id": tt.path,
+			}
+			encoded, err := json.Marshal(body)
+			assert.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			handler := Validate[TestValidate](http.HandlerFunc(mockNextHandler))
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/test", bytes.NewReader(encoded)))
+			assert.Equal(t, tt.expectedStatus, recorder.Code)
 		})
 	}
 }

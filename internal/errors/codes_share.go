@@ -1,19 +1,21 @@
 package apierrors
 
 const (
-	CodeShareNotFound             = "SHARE_NOT_FOUND"
-	CodeShareExpired              = "SHARE_EXPIRED"
-	CodeShareMaxViewsReached      = "SHARE_MAX_VIEWS_REACHED"
-	CodeShareTokenRequired        = "SHARE_TOKEN_REQUIRED"
-	CodeShareTokenInvalid         = "SHARE_TOKEN_INVALID"
-	CodeSharePasswordInvalid      = "SHARE_PASSWORD_INVALID"
-	CodeShareNotPasswordProtected = "SHARE_NOT_PASSWORD_PROTECTED"
-	CodeShareFileNotInShare       = "SHARE_FILE_NOT_IN_SHARE"
-	CodeShareUploadNotAllowed     = "SHARE_UPLOAD_NOT_ALLOWED"
-	CodeShareMaxUploadsReached    = "SHARE_MAX_UPLOADS_REACHED"
-	CodeShareUploadSizeExceeded   = "SHARE_UPLOAD_SIZE_EXCEEDED"
-	CodeShareNotSingleFile        = "SHARE_NOT_SINGLE_FILE"
-	CodeRedirectDownloadDisabled  = "REDIRECT_DOWNLOAD_DISABLED"
+	CodeShareNotFound              = "SHARE_NOT_FOUND"
+	CodeShareExpired               = "SHARE_EXPIRED"
+	CodeShareMaxViewsReached       = "SHARE_MAX_VIEWS_REACHED"
+	CodeShareTokenRequired         = "SHARE_TOKEN_REQUIRED"
+	CodeShareTokenInvalid          = "SHARE_TOKEN_INVALID"
+	CodeSharePasswordInvalid       = "SHARE_PASSWORD_INVALID"
+	CodeShareNotPasswordProtected  = "SHARE_NOT_PASSWORD_PROTECTED"
+	CodeShareFileNotInShare        = "SHARE_FILE_NOT_IN_SHARE"
+	CodeShareUploadNotAllowed      = "SHARE_UPLOAD_NOT_ALLOWED"
+	CodeShareMaxUploadsReached     = "SHARE_MAX_UPLOADS_REACHED"
+	CodeShareUploadSizeExceeded    = "SHARE_UPLOAD_SIZE_EXCEEDED"
+	CodeShareNotSingleFile         = "SHARE_NOT_SINGLE_FILE"
+	CodeShareCustomIDAlreadyExists = "SHARE_CUSTOM_ID_ALREADY_EXISTS"
+	CodeCustomShareIDsDisabled     = "CUSTOM_SHARE_IDS_DISABLED"
+	CodeRedirectDownloadDisabled   = "REDIRECT_DOWNLOAD_DISABLED"
 )
 
 const (
